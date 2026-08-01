@@ -441,7 +441,7 @@
     <div class="abschnitt-kopf">
       <span class="titel">Bewegungserkennung</span>
       <label class="schalter">
-        <input type="checkbox" id="anwesenheitToggle">
+        <input type="checkbox" id="anwesenheitToggle" checked>
         <span class="schalter-slider"></span>
       </label>
     </div>
@@ -557,7 +557,6 @@
   const automatikTimerEl = document.getElementById('automatikTimer');
   const automatikSubEl = document.getElementById('automatikSub');
 
-  let automatikSyncTimer = null;
   let automatikTickTimer = null;
   let restSekunden = 0;
 
@@ -596,13 +595,11 @@
           timerAnzeigeAktualisieren();
         }, 1000);
       }
-      if (!automatikSyncTimer) automatikSyncTimer = setInterval(automatikStatusAbrufen, 5000);
     } else {
       automatikPhaseEl.textContent = 'Automatik';
       automatikTimerEl.textContent = '--:--';
       automatikSubEl.textContent = 'ausgeschaltet';
       if (automatikTickTimer) { clearInterval(automatikTickTimer); automatikTickTimer = null; }
-      if (automatikSyncTimer) { clearInterval(automatikSyncTimer); automatikSyncTimer = null; }
     }
   }
 
@@ -643,8 +640,6 @@
   const anwesenheitDistanzEl = document.getElementById('anwesenheitDistanz');
   const anwesenheitSubEl = document.getElementById('anwesenheitSub');
 
-  let anwesenheitSyncTimer = null;
-
   function anwesenheitAnzeigen(data) {
     anwesenheitToggle.checked = !!data.aktiv;
     abfrageInput.disabled = !!data.aktiv;
@@ -657,12 +652,10 @@
       anwesenheitPhaseEl.textContent = (data.distanz_cm != null ? data.distanz_cm : '--') + ' cm';
       anwesenheitDistanzEl.textContent = formatZeit(data.rest_sek);
       anwesenheitSubEl.textContent = 'bis Automatik-Stopp ohne Bewegung';
-      if (!anwesenheitSyncTimer) anwesenheitSyncTimer = setInterval(anwesenheitStatusAbrufen, 2000);
     } else {
       anwesenheitPhaseEl.textContent = 'Sensor';
       anwesenheitDistanzEl.textContent = '--:--';
       anwesenheitSubEl.textContent = 'ausgeschaltet';
-      if (anwesenheitSyncTimer) { clearInterval(anwesenheitSyncTimer); anwesenheitSyncTimer = null; }
     }
   }
 
@@ -722,8 +715,9 @@
 
   // --- Verlauf der letzten Aktionen ---
   const verlaufListe = document.getElementById('verlaufListe');
-  const VERLAUF_ICON = { auf: '&#8593;', ab: '&#8595;', stehen: '&#128694;', sitzen: '&#128719;' };
-  const VERLAUF_LABEL = { auf: 'Auf', ab: 'Ab', stehen: 'Stehen', sitzen: 'Sitzen' };
+  const VERLAUF_ICON = { auf: '&#8593;', ab: '&#8595;', stehen: '&#128694;', sitzen: '&#128719;', automatik_ein: '&#9654;', automatik_aus: '&#9208;' };
+  const VERLAUF_LABEL = { auf: 'Auf', ab: 'Ab', stehen: 'Stehen', sitzen: 'Sitzen', automatik_ein: 'Automatik gestartet', automatik_aus: 'Automatik gestoppt' };
+  const VERLAUF_BADGE = { automatik: 'Automatik', sensor: 'Sensor' };
 
   function formatVor(sek) {
     if (sek < 60) return 'vor ' + sek + 's';
@@ -744,7 +738,8 @@
       verlaufListe.innerHTML = eintraege.map(e => {
         const icon = VERLAUF_ICON[e.aktion] || '&#8226;';
         const label = VERLAUF_LABEL[e.aktion] || e.aktion;
-        const badge = e.quelle === 'automatik' ? '<span class="verlauf-badge">Automatik</span>' : '';
+        const badgeText = VERLAUF_BADGE[e.quelle];
+        const badge = badgeText ? '<span class="verlauf-badge">' + badgeText + '</span>' : '';
         return '<li>' +
           '<span class="verlauf-icon">' + icon + '</span>' +
           '<span class="verlauf-text">' + label + badge + '</span>' +
@@ -828,13 +823,18 @@
     setTimeout(() => location.reload(), 8000);
   });
 
-  infoAbrufen();
-  verlaufAbrufen();
-  setInterval(infoAbrufen, 20000);
-  setInterval(verlaufAbrufen, 10000);
+  // Seite aktualisiert sich alle 10s selbststaendig (Info, Verlauf, Automatik-
+  // und Anwesenheits-Status), damit der aktuelle Zustand des Picos jederzeit
+  // sichtbar ist, ohne die Seite neu zu laden.
+  function seiteAktualisieren() {
+    infoAbrufen();
+    verlaufAbrufen();
+    automatikStatusAbrufen();
+    anwesenheitStatusAbrufen();
+  }
 
-  automatikStatusAbrufen();
-  anwesenheitStatusAbrufen();
+  seiteAktualisieren();
+  setInterval(seiteAktualisieren, 10000);
 </script>
 </body>
 </html>

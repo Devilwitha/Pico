@@ -333,7 +333,7 @@ def automatik_tick():
 # (Bewegung) zaehlt - Toleranz gegen normales Sensor-Rauschen
 ANWESENHEIT_AENDERUNG_TOLERANZ_CM = 3
 
-anwesenheit_aktiv = False
+anwesenheit_aktiv = True
 anwesenheit_abfrage_sek = 3          # wie oft der Sensor abgefragt wird
 anwesenheit_keine_aenderung_sek = 10 * 60  # Timeout bis zum Abschalten
 anwesenheit_letzte_distanz_cm = None
@@ -341,7 +341,7 @@ anwesenheit_letzte_distanz_cm = None
 # Referenzwert, Zeitpunkt der letzten Aenderung und Zeitpunkt der letzten
 # Messung (fuer das vom 1-Sekunden-Haupttick entkoppelte Abfrage-Intervall)
 anwesenheit_referenz_distanz_cm = None
-anwesenheit_letzte_aenderung_zeit = 0
+anwesenheit_letzte_aenderung_zeit = BOOT_ZEIT
 anwesenheit_letzte_messung_zeit = 0
 
 
@@ -422,12 +422,14 @@ def anwesenheit_tick():
         anwesenheit_letzte_aenderung_zeit = jetzt
         if aenderung_erkannt and not automatik_aktiv:
             automatik_einschalten(automatik_sitzen_sek / 60, automatik_stehen_sek / 60, "sitzen")
+            verlauf_eintragen("automatik_ein", "sensor")
             print("Bewegung erkannt - Automatik automatisch gestartet")
         return
 
     if jetzt - anwesenheit_letzte_aenderung_zeit >= anwesenheit_keine_aenderung_sek:
         if automatik_aktiv:
             automatik_ausschalten()
+            verlauf_eintragen("automatik_aus", "sensor")
             print(int(anwesenheit_keine_aenderung_sek), "Sek. keine Bewegung - Automatik automatisch gestoppt")
         anwesenheit_letzte_aenderung_zeit = jetzt  # Timer neu starten
 
