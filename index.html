@@ -1,0 +1,840 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pico Steuerung</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg-1: #0b1120;
+    --bg-2: #1e293b;
+    --accent: #38bdf8;
+    --accent-2: #a855f7;
+    --gruen: #4ade80;
+    --rot: #f87171;
+    --card: rgba(255,255,255,0.06);
+    --card-border: rgba(255,255,255,0.12);
+    --text: #e2e8f0;
+    --text-dim: #94a3b8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    color: var(--text);
+    padding: 24px;
+    background: var(--bg-1);
+    overflow-x: hidden;
+  }
+  body::before, body::after {
+    content: "";
+    position: fixed;
+    width: 60vmax;
+    height: 60vmax;
+    border-radius: 50%;
+    filter: blur(90px);
+    opacity: 0.28;
+    z-index: -1;
+    animation: schweben 16s ease-in-out infinite alternate;
+  }
+  body::before {
+    background: var(--accent);
+    top: -20vmax;
+    left: -20vmax;
+  }
+  body::after {
+    background: var(--accent-2);
+    bottom: -22vmax;
+    right: -18vmax;
+    animation-delay: -8s;
+  }
+  @keyframes schweben {
+    from { transform: translate(0, 0) scale(1); }
+    to { transform: translate(4vmax, 3vmax) scale(1.08); }
+  }
+  .karte {
+    position: relative;
+    width: 100%;
+    max-width: 420px;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    backdrop-filter: blur(20px);
+    border-radius: 26px;
+    padding: 30px 26px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.45);
+  }
+  .kopf {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    margin-bottom: 4px;
+  }
+  h1 {
+    margin: 0;
+    font-size: 21px;
+    text-align: center;
+    letter-spacing: 0.3px;
+  }
+  .live-punkt {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    flex-shrink: 0;
+  }
+  .live-punkt.online {
+    background: var(--gruen);
+    box-shadow: 0 0 0 0 rgba(74,222,128,0.6);
+    animation: puls 2s ease-out infinite;
+  }
+  .live-punkt.offline { background: var(--rot); }
+  @keyframes puls {
+    0%   { box-shadow: 0 0 0 0 rgba(74,222,128,0.55); }
+    70%  { box-shadow: 0 0 0 8px rgba(74,222,128,0); }
+    100% { box-shadow: 0 0 0 0 rgba(74,222,128,0); }
+  }
+  .info-zeile {
+    text-align: center;
+    font-size: 11.5px;
+    color: var(--text-dim);
+    margin-bottom: 22px;
+    letter-spacing: 0.2px;
+  }
+  .status {
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 13px;
+    margin-bottom: 20px;
+    min-height: 18px;
+    transition: color 0.2s ease;
+  }
+  .status.ok { color: var(--gruen); }
+  .status.fehler { color: var(--rot); }
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  button {
+    appearance: none;
+    border: 1px solid var(--card-border);
+    border-radius: 18px;
+    padding: 22px 12px;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text);
+    background: linear-gradient(160deg, rgba(56,189,248,0.18), rgba(168,85,247,0.12));
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
+  }
+  button .icon { font-size: 26px; }
+  button:hover {
+    box-shadow: 0 10px 24px rgba(56,189,248,0.25);
+    transform: translateY(-2px);
+  }
+  button:active {
+    transform: translateY(0) scale(0.96);
+    background: linear-gradient(160deg, rgba(56,189,248,0.35), rgba(168,85,247,0.25));
+  }
+  button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+  }
+  footer {
+    margin-top: 24px;
+    text-align: center;
+    font-size: 11px;
+    color: var(--text-dim);
+    letter-spacing: 0.4px;
+  }
+  .trenner {
+    height: 1px;
+    background: var(--card-border);
+    margin: 26px 0 20px;
+  }
+  .abschnitt-kopf {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+  }
+  .abschnitt-kopf .titel {
+    font-weight: 600;
+    font-size: 15px;
+  }
+  .abschnitt-kopf .zaehler {
+    font-size: 11px;
+    color: var(--text-dim);
+    background: rgba(255,255,255,0.06);
+    border-radius: 999px;
+    padding: 3px 9px;
+  }
+  .schalter {
+    position: relative;
+    display: inline-block;
+    width: 46px;
+    height: 26px;
+    flex-shrink: 0;
+  }
+  .schalter input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+  .schalter-slider {
+    position: absolute;
+    cursor: pointer;
+    inset: 0;
+    background: rgba(255,255,255,0.15);
+    border-radius: 999px;
+    transition: background 0.2s ease;
+  }
+  .schalter-slider::before {
+    content: "";
+    position: absolute;
+    height: 20px;
+    width: 20px;
+    left: 3px;
+    top: 3px;
+    background: white;
+    border-radius: 50%;
+    transition: transform 0.2s ease;
+  }
+  .schalter input:checked + .schalter-slider {
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  }
+  .schalter input:checked + .schalter-slider::before {
+    transform: translateX(20px);
+  }
+  .automatik-felder {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  .feld label {
+    display: block;
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+  }
+  .feld input, .feld select {
+    width: 100%;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 10px;
+    color: var(--text);
+    font-size: 14px;
+  }
+  .feld input:disabled, .feld select:disabled {
+    opacity: 0.5;
+  }
+  .automatik-info {
+    text-align: center;
+    font-size: 13px;
+    color: var(--text-dim);
+    min-height: 18px;
+  }
+  .automatik-status {
+    text-align: center;
+    border-radius: 16px;
+    padding: 16px;
+    margin-bottom: 4px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--card-border);
+    transition: background 0.2s ease, border-color 0.2s ease;
+  }
+  .automatik-status.aktiv {
+    background: linear-gradient(160deg, rgba(56,189,248,0.14), rgba(168,85,247,0.10));
+    border-color: rgba(56,189,248,0.35);
+  }
+  .automatik-phase {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 6px;
+  }
+  .automatik-timer {
+    font-size: 32px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 1px;
+  }
+  .automatik-sub {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 4px;
+  }
+  .verlauf-liste {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 220px;
+    overflow-y: auto;
+  }
+  .verlauf-liste li {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 9px 4px;
+    border-bottom: 1px solid var(--card-border);
+    font-size: 13px;
+  }
+  .verlauf-liste li:last-child { border-bottom: none; }
+  .verlauf-icon {
+    width: 30px;
+    height: 30px;
+    flex-shrink: 0;
+    border-radius: 10px;
+    background: rgba(255,255,255,0.06);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+  }
+  .verlauf-text { flex: 1; }
+  .verlauf-badge {
+    font-size: 9.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--accent-2);
+    background: rgba(168,85,247,0.14);
+    border-radius: 999px;
+    padding: 2px 7px;
+    margin-left: 6px;
+  }
+  .verlauf-zeit {
+    font-size: 11.5px;
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+  .verlauf-leer {
+    text-align: center;
+    font-size: 12.5px;
+    color: var(--text-dim);
+    padding: 10px 0;
+  }
+  .update-datei {
+    display: block;
+    text-align: center;
+    padding: 14px;
+    border: 1px dashed var(--card-border);
+    border-radius: 12px;
+    font-size: 13px;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: border-color 0.15s ease, color 0.15s ease;
+    margin-bottom: 12px;
+  }
+  .update-datei:hover {
+    border-color: var(--accent);
+    color: var(--text);
+  }
+  .update-datei.gewaehlt {
+    border-color: var(--accent);
+    color: var(--text);
+  }
+  .update-aktionen {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .update-btn, .neustart-btn {
+    appearance: none;
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    padding: 11px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    color: var(--text);
+    transition: opacity 0.15s ease, transform 0.12s ease;
+  }
+  .update-btn {
+    background: linear-gradient(160deg, rgba(56,189,248,0.28), rgba(168,85,247,0.20));
+  }
+  .neustart-btn {
+    background: rgba(255,255,255,0.05);
+  }
+  .update-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  .update-btn:active:not(:disabled), .neustart-btn:active {
+    transform: scale(0.97);
+  }
+  .update-info {
+    text-align: center;
+    font-size: 11.5px;
+    color: var(--text-dim);
+    margin-top: 10px;
+    line-height: 1.5;
+  }
+  .update-info.fehler { color: var(--rot); }
+  .update-info.ok { color: var(--gruen); }
+</style>
+</head>
+<body>
+  <div class="karte">
+    <div class="kopf">
+      <span class="live-punkt" id="livePunkt"></span>
+      <h1>Pico Steuerung</h1>
+    </div>
+    <div class="info-zeile" id="infoZeile">Verbinde...</div>
+    <div class="status" id="status">Bereit</div>
+    <div class="grid">
+      <button data-aktion="auf" data-modus="halten"><span class="icon">&#8593;</span>Auf</button>
+      <button data-aktion="ab" data-modus="halten"><span class="icon">&#8595;</span>Ab</button>
+      <button data-aktion="stehen" data-modus="impuls"><span class="icon">&#128694;</span>Stehen</button>
+      <button data-aktion="sitzen" data-modus="impuls"><span class="icon">&#128719;</span>Sitzen</button>
+    </div>
+
+    <div class="trenner"></div>
+
+    <div class="abschnitt-kopf">
+      <span class="titel">Automatik</span>
+      <label class="schalter">
+        <input type="checkbox" id="automatikToggle">
+        <span class="schalter-slider"></span>
+      </label>
+    </div>
+    <div class="automatik-felder">
+      <div class="feld">
+        <label for="sitzenMin">Sitzen (Min)</label>
+        <input type="number" id="sitzenMin" min="1" value="90">
+      </div>
+      <div class="feld">
+        <label for="stehenMin">Stehen (Min)</label>
+        <input type="number" id="stehenMin" min="1" value="30">
+      </div>
+      <div class="feld" style="grid-column: 1 / -1;">
+        <label for="startPhase">Aktuelle Position</label>
+        <select id="startPhase">
+          <option value="sitzen">Sitzen</option>
+          <option value="stehen">Stehen</option>
+        </select>
+      </div>
+    </div>
+    <div class="automatik-status" id="automatikStatus">
+      <div class="automatik-phase" id="automatikPhase">Automatik</div>
+      <div class="automatik-timer" id="automatikTimer">--:--</div>
+      <div class="automatik-sub" id="automatikSub">ausgeschaltet</div>
+    </div>
+
+    <div class="trenner"></div>
+
+    <div class="abschnitt-kopf">
+      <span class="titel">Bewegungserkennung</span>
+      <label class="schalter">
+        <input type="checkbox" id="anwesenheitToggle">
+        <span class="schalter-slider"></span>
+      </label>
+    </div>
+    <div class="automatik-felder">
+      <div class="feld">
+        <label for="abfrageInput">Abfrage (Sek.)</label>
+        <input type="number" id="abfrageInput" min="1" value="3">
+      </div>
+      <div class="feld">
+        <label for="timeoutInput">Timeout ohne Bewegung (Min.)</label>
+        <input type="number" id="timeoutInput" min="1" value="10">
+      </div>
+    </div>
+    <div class="automatik-status" id="anwesenheitStatus">
+      <div class="automatik-phase" id="anwesenheitPhase">Sensor</div>
+      <div class="automatik-timer" id="anwesenheitDistanz">-- cm</div>
+      <div class="automatik-sub" id="anwesenheitSub">ausgeschaltet</div>
+    </div>
+
+    <div class="trenner"></div>
+
+    <div class="abschnitt-kopf">
+      <span class="titel">Verlauf</span>
+    </div>
+    <ul class="verlauf-liste" id="verlaufListe">
+      <li class="verlauf-leer">Noch keine Aktionen</li>
+    </ul>
+
+    <div class="trenner"></div>
+
+    <div class="abschnitt-kopf">
+      <span class="titel">Update</span>
+      <span class="zaehler" id="versionAnzeige">v?</span>
+    </div>
+    <div class="update-bereich">
+      <label class="update-datei" for="updateDatei">
+        <span id="updateDateiName">Datei auswaehlen (main.py oder index.html)</span>
+      </label>
+      <input type="file" id="updateDatei" accept=".py,.html" hidden>
+      <div class="update-aktionen">
+        <button type="button" class="update-btn" id="updateButton" disabled>Update hochladen</button>
+        <button type="button" class="neustart-btn" id="neustartButton">Neustart</button>
+      </div>
+      <div class="update-info" id="updateInfo">.py ersetzt main.py und startet den Pico neu, .html ersetzt index.html ohne Neustart. Ungueltige Dateien werden automatisch abgelehnt.</div>
+    </div>
+
+    <div class="trenner"></div>
+    <footer>Raspberry Pi Pico W</footer>
+  </div>
+
+<script>
+  const statusEl = document.getElementById('status');
+  const buttons = document.querySelectorAll('button[data-aktion]');
+
+  function zeigeStatus(text, art) {
+    statusEl.className = art ? ('status ' + art) : 'status';
+    statusEl.textContent = text;
+  }
+
+  async function anfrage(pfad, aktion, erfolgstext) {
+    try {
+      const res = await fetch(pfad);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      zeigeStatus(data.ok ? erfolgstext : ('Fehler bei "' + aktion + '"'), data.ok ? 'ok' : 'fehler');
+      if (data.ok) verlaufAbrufen();
+    } catch (err) {
+      zeigeStatus('Verbindungsfehler', 'fehler');
+    }
+  }
+
+  // "stehen"/"sitzen": ein Klick = kurzer Impuls
+  function impuls(aktion) {
+    zeigeStatus('Sende "' + aktion + '" ...');
+    anfrage('/aktion/' + aktion, aktion, '"' + aktion + '" ausgefuehrt');
+  }
+
+  // "auf"/"ab": aktiv solange der Button gedrueckt gehalten wird
+  function haltenStart(btn, aktion) {
+    btn.setPointerCapture && btn.pointerId !== undefined && btn.setPointerCapture(btn.pointerId);
+    zeigeStatus('"' + aktion + '" haelt...');
+    anfrage('/start/' + aktion, aktion, '"' + aktion + '" aktiv');
+  }
+
+  function haltenStop(aktion) {
+    zeigeStatus('"' + aktion + '" gestoppt');
+    anfrage('/stop/' + aktion, aktion, '"' + aktion + '" gestoppt');
+  }
+
+  buttons.forEach(btn => {
+    const aktion = btn.dataset.aktion;
+
+    if (btn.dataset.modus === 'halten') {
+      btn.addEventListener('pointerdown', (ev) => {
+        ev.preventDefault();
+        haltenStart(btn, aktion);
+      });
+      ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => {
+        btn.addEventListener(ev, () => haltenStop(aktion));
+      });
+    } else {
+      btn.addEventListener('click', () => impuls(aktion));
+    }
+  });
+
+  // --- Automatik: wechselt nach Ablauf der Zeit selbststaendig zwischen Sitzen/Stehen ---
+  const automatikToggle = document.getElementById('automatikToggle');
+  const sitzenInput = document.getElementById('sitzenMin');
+  const stehenInput = document.getElementById('stehenMin');
+  const startPhaseSelect = document.getElementById('startPhase');
+  const automatikStatusEl = document.getElementById('automatikStatus');
+  const automatikPhaseEl = document.getElementById('automatikPhase');
+  const automatikTimerEl = document.getElementById('automatikTimer');
+  const automatikSubEl = document.getElementById('automatikSub');
+
+  let automatikSyncTimer = null;
+  let automatikTickTimer = null;
+  let restSekunden = 0;
+
+  function formatZeit(sek) {
+    sek = Math.max(0, Math.round(sek));
+    const m = Math.floor(sek / 60);
+    const s = sek % 60;
+    return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+  }
+
+  function timerAnzeigeAktualisieren() {
+    automatikTimerEl.textContent = formatZeit(restSekunden);
+  }
+
+  function automatikAnzeigen(data) {
+    automatikToggle.checked = !!data.aktiv;
+    sitzenInput.disabled = !!data.aktiv;
+    stehenInput.disabled = !!data.aktiv;
+    startPhaseSelect.disabled = !!data.aktiv;
+    automatikStatusEl.classList.toggle('aktiv', !!data.aktiv);
+
+    if (data.aktiv) {
+      if (data.sitzen_min) sitzenInput.value = data.sitzen_min;
+      if (data.stehen_min) stehenInput.value = data.stehen_min;
+
+      const aktuellePhase = data.phase === 'sitzen' ? 'Sitzen' : 'Stehen';
+      const naechstePhase = data.phase === 'sitzen' ? 'Stehen' : 'Sitzen';
+      automatikPhaseEl.textContent = 'Aktiv - ' + aktuellePhase;
+      automatikSubEl.textContent = 'bis Wechsel zu "' + naechstePhase + '"';
+      restSekunden = data.rest_sek;
+      timerAnzeigeAktualisieren();
+
+      if (!automatikTickTimer) {
+        automatikTickTimer = setInterval(() => {
+          restSekunden = Math.max(0, restSekunden - 1);
+          timerAnzeigeAktualisieren();
+        }, 1000);
+      }
+      if (!automatikSyncTimer) automatikSyncTimer = setInterval(automatikStatusAbrufen, 5000);
+    } else {
+      automatikPhaseEl.textContent = 'Automatik';
+      automatikTimerEl.textContent = '--:--';
+      automatikSubEl.textContent = 'ausgeschaltet';
+      if (automatikTickTimer) { clearInterval(automatikTickTimer); automatikTickTimer = null; }
+      if (automatikSyncTimer) { clearInterval(automatikSyncTimer); automatikSyncTimer = null; }
+    }
+  }
+
+  async function automatikStatusAbrufen() {
+    try {
+      const res = await fetch('/automatik/status');
+      const data = await res.json();
+      automatikAnzeigen(data);
+    } catch (err) {
+      // Status wird beim naechsten Intervall erneut versucht
+    }
+  }
+
+  automatikToggle.addEventListener('change', async () => {
+    try {
+      if (automatikToggle.checked) {
+        const sitzen = sitzenInput.value || 90;
+        const stehen = stehenInput.value || 30;
+        const phase = startPhaseSelect.value;
+        const res = await fetch('/automatik/start?sitzen=' + sitzen + '&stehen=' + stehen + '&phase=' + phase);
+        automatikAnzeigen(await res.json());
+      } else {
+        const res = await fetch('/automatik/stop');
+        automatikAnzeigen(await res.json());
+      }
+    } catch (err) {
+      automatikSubEl.textContent = 'Verbindungsfehler';
+    }
+  });
+
+  // --- Bewegungserkennung: fragt den Ultraschallsensor in einem eigenen Intervall ab.
+  // Bewegung (Distanzaenderung) schaltet die Automatik ein, laengerer Stillstand aus. ---
+  const anwesenheitToggle = document.getElementById('anwesenheitToggle');
+  const abfrageInput = document.getElementById('abfrageInput');
+  const timeoutInput = document.getElementById('timeoutInput');
+  const anwesenheitStatusEl = document.getElementById('anwesenheitStatus');
+  const anwesenheitPhaseEl = document.getElementById('anwesenheitPhase');
+  const anwesenheitDistanzEl = document.getElementById('anwesenheitDistanz');
+  const anwesenheitSubEl = document.getElementById('anwesenheitSub');
+
+  let anwesenheitSyncTimer = null;
+
+  function anwesenheitAnzeigen(data) {
+    anwesenheitToggle.checked = !!data.aktiv;
+    abfrageInput.disabled = !!data.aktiv;
+    timeoutInput.disabled = !!data.aktiv;
+    anwesenheitStatusEl.classList.toggle('aktiv', !!data.aktiv);
+
+    if (data.aktiv) {
+      if (data.abfrage_sek) abfrageInput.value = data.abfrage_sek;
+      if (data.keine_aenderung_min) timeoutInput.value = data.keine_aenderung_min;
+      anwesenheitPhaseEl.textContent = (data.distanz_cm != null ? data.distanz_cm : '--') + ' cm';
+      anwesenheitDistanzEl.textContent = formatZeit(data.rest_sek);
+      anwesenheitSubEl.textContent = 'bis Automatik-Stopp ohne Bewegung';
+      if (!anwesenheitSyncTimer) anwesenheitSyncTimer = setInterval(anwesenheitStatusAbrufen, 2000);
+    } else {
+      anwesenheitPhaseEl.textContent = 'Sensor';
+      anwesenheitDistanzEl.textContent = '--:--';
+      anwesenheitSubEl.textContent = 'ausgeschaltet';
+      if (anwesenheitSyncTimer) { clearInterval(anwesenheitSyncTimer); anwesenheitSyncTimer = null; }
+    }
+  }
+
+  async function anwesenheitStatusAbrufen() {
+    try {
+      const res = await fetch('/anwesenheit/status');
+      const data = await res.json();
+      anwesenheitAnzeigen(data);
+    } catch (err) {
+      // Status wird beim naechsten Intervall erneut versucht
+    }
+  }
+
+  anwesenheitToggle.addEventListener('change', async () => {
+    try {
+      if (anwesenheitToggle.checked) {
+        const abfrage = abfrageInput.value || 3;
+        const timeout = timeoutInput.value || 10;
+        const res = await fetch('/anwesenheit/start?abfrage=' + abfrage + '&timeout=' + timeout);
+        anwesenheitAnzeigen(await res.json());
+      } else {
+        const res = await fetch('/anwesenheit/stop');
+        anwesenheitAnzeigen(await res.json());
+      }
+    } catch (err) {
+      anwesenheitSubEl.textContent = 'Verbindungsfehler';
+    }
+  });
+
+  // --- Info-Zeile (IP/Laufzeit) + Online-Anzeige ---
+  const infoZeile = document.getElementById('infoZeile');
+  const livePunkt = document.getElementById('livePunkt');
+  const versionAnzeige = document.getElementById('versionAnzeige');
+
+  function formatDauer(sek) {
+    sek = Math.max(0, Math.floor(sek));
+    const h = Math.floor(sek / 3600);
+    const m = Math.floor((sek % 3600) / 60);
+    if (h > 0) return h + 'h ' + m + 'm';
+    if (m > 0) return m + 'm';
+    return sek + 's';
+  }
+
+  async function infoAbrufen() {
+    try {
+      const res = await fetch('/info');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      infoZeile.textContent = (data.ip || '?') + ' - Laufzeit ' + formatDauer(data.uptime_sek);
+      livePunkt.className = 'live-punkt online';
+      if (data.version) versionAnzeige.textContent = 'v' + data.version;
+    } catch (err) {
+      infoZeile.textContent = 'Keine Verbindung zum Pico';
+      livePunkt.className = 'live-punkt offline';
+    }
+  }
+
+  // --- Verlauf der letzten Aktionen ---
+  const verlaufListe = document.getElementById('verlaufListe');
+  const VERLAUF_ICON = { auf: '&#8593;', ab: '&#8595;', stehen: '&#128694;', sitzen: '&#128719;' };
+  const VERLAUF_LABEL = { auf: 'Auf', ab: 'Ab', stehen: 'Stehen', sitzen: 'Sitzen' };
+
+  function formatVor(sek) {
+    if (sek < 60) return 'vor ' + sek + 's';
+    const m = Math.floor(sek / 60);
+    if (m < 60) return 'vor ' + m + 'm';
+    return 'vor ' + Math.floor(m / 60) + 'h';
+  }
+
+  async function verlaufAbrufen() {
+    try {
+      const res = await fetch('/verlauf');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const eintraege = await res.json();
+      if (!eintraege.length) {
+        verlaufListe.innerHTML = '<li class="verlauf-leer">Noch keine Aktionen</li>';
+        return;
+      }
+      verlaufListe.innerHTML = eintraege.map(e => {
+        const icon = VERLAUF_ICON[e.aktion] || '&#8226;';
+        const label = VERLAUF_LABEL[e.aktion] || e.aktion;
+        const badge = e.quelle === 'automatik' ? '<span class="verlauf-badge">Automatik</span>' : '';
+        return '<li>' +
+          '<span class="verlauf-icon">' + icon + '</span>' +
+          '<span class="verlauf-text">' + label + badge + '</span>' +
+          '<span class="verlauf-zeit">' + formatVor(e.vor_sek) + '</span>' +
+        '</li>';
+      }).join('');
+    } catch (err) {
+      // Verlauf wird beim naechsten Poll erneut versucht
+    }
+  }
+
+  // --- Update: neue Skript-Version hochladen, Geraet startet danach neu ---
+  const updateDatei = document.getElementById('updateDatei');
+  const updateDateiLabel = document.querySelector('.update-datei');
+  const updateDateiName = document.getElementById('updateDateiName');
+  const updateButton = document.getElementById('updateButton');
+  const neustartButton = document.getElementById('neustartButton');
+  const updateInfo = document.getElementById('updateInfo');
+
+  function updateInfoAnzeigen(text, art) {
+    updateInfo.className = art ? ('update-info ' + art) : 'update-info';
+    updateInfo.textContent = text;
+  }
+
+  function updateZielErmitteln(dateiname) {
+    return dateiname.toLowerCase().endsWith('.html') ? 'index.html' : 'main.py';
+  }
+
+  updateDatei.addEventListener('change', () => {
+    const datei = updateDatei.files[0];
+    if (datei) {
+      updateDateiName.textContent = datei.name;
+      updateDateiLabel.classList.add('gewaehlt');
+      updateButton.disabled = false;
+    } else {
+      updateDateiName.textContent = 'Datei auswaehlen (main.py oder index.html)';
+      updateDateiLabel.classList.remove('gewaehlt');
+      updateButton.disabled = true;
+    }
+  });
+
+  updateButton.addEventListener('click', async () => {
+    const datei = updateDatei.files[0];
+    if (!datei) return;
+    const ziel = updateZielErmitteln(datei.name);
+    if (!confirm(ziel + ' mit "' + datei.name + '" ersetzen' + (ziel === 'main.py' ? ' und Pico neu starten?' : '?'))) return;
+
+    updateButton.disabled = true;
+    neustartButton.disabled = true;
+    updateInfoAnzeigen('Lade hoch...');
+    try {
+      const inhalt = await datei.arrayBuffer();
+      const res = await fetch('/update?ziel=' + encodeURIComponent(ziel), { method: 'POST', body: inhalt });
+      const data = await res.json();
+      if (data.ok && data.neustart) {
+        updateInfoAnzeigen('Update erfolgreich - Pico startet neu. Seite in ca. 10s neu laden.', 'ok');
+        setTimeout(() => location.reload(), 10000);
+      } else if (data.ok) {
+        updateInfoAnzeigen(ziel + ' aktualisiert - kein Neustart noetig. Seite wird neu geladen.', 'ok');
+        setTimeout(() => location.reload(), 1500);
+      } else {
+        updateInfoAnzeigen('Fehler: ' + (data.fehler || 'unbekannt'), 'fehler');
+        updateButton.disabled = false;
+        neustartButton.disabled = false;
+      }
+    } catch (err) {
+      updateInfoAnzeigen('Verbindung getrennt - falls das Update angenommen wurde, startet der Pico gerade neu.', 'fehler');
+      neustartButton.disabled = false;
+    }
+  });
+
+  neustartButton.addEventListener('click', async () => {
+    if (!confirm('Pico jetzt neu starten?')) return;
+    neustartButton.disabled = true;
+    updateInfoAnzeigen('Neustart...');
+    try {
+      await fetch('/neustart');
+    } catch (err) {
+      // Verbindung bricht durch den Neustart erwartungsgemaess ab
+    }
+    setTimeout(() => location.reload(), 8000);
+  });
+
+  infoAbrufen();
+  verlaufAbrufen();
+  setInterval(infoAbrufen, 20000);
+  setInterval(verlaufAbrufen, 10000);
+
+  automatikStatusAbrufen();
+  anwesenheitStatusAbrufen();
+</script>
+</body>
+</html>

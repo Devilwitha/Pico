@@ -4,13 +4,21 @@ Pico W Steuerung - WLAN Webserver mit 4 Tasten (Auf / Ab / Stehen / Sitzen)
 Verbindet sich mit einem bestehenden WLAN und startet einen Webserver mit
 moderner Oberflaeche. Ueber vier Buttons koennen GPIO-Ausgaenge angesteuert
 werden (z.B. fuer Relais, Motorsteuerung o.ae.). Enthaelt ausserdem eine
-Automatik (zeitgesteuerter Wechsel Sitzen/Stehen) und eine WLAN-Update-
-Funktion: im Browser eine neue Version dieser Datei hochladen, der Pico
-prueft sie auf gueltiges Python, ersetzt main.py und startet neu.
+Automatik (zeitgesteuerter Wechsel Sitzen/Stehen), eine Anwesenheitserkennung
+per Grove Ultrasonic Ranger (aktiviert die Automatik automatisch, sobald ein
+Objekt naeher als ein im Web einstellbarer Schwellwert ist) und eine
+WLAN-Update-Funktion: im Browser eine neue Version dieser Datei hochladen,
+der Pico prueft sie auf gueltiges Python, ersetzt main.py und startet neu.
 
 Einfach WLAN_SSID / WLAN_PASSWORT unten eintragen (oder eine Datei
 "wlan.conf" mit {"ssid": "...", "password": "..."} neben dieses Skript
 legen) und als main.py auf den Pico W kopieren.
+
+Verkabelung Grove Ultrasonic Ranger (siehe PIN_SIG_ULTRASCHALL unten):
+  Schwarz (GND) -> GND
+  Rot     (VCC) -> 3V3 OUT (nicht an 5V/VBUS, GPIOs sind nicht 5V-tolerant!)
+  Gelb    (SIG) -> GPIO aus PIN_SIG_ULTRASCHALL
+  Weiss   (NC)  -> nicht anschliessen
 """
 
 import network
@@ -21,7 +29,7 @@ import gc
 import os
 import machine
 import _thread
-from machine import Pin
+from machine import Pin, time_pulse_us
 
 # ---------------------------------------------------------------------------
 # Konfiguration
@@ -45,6 +53,9 @@ PIN_AUF = 13
 PIN_AB = 10
 PIN_STEHEN = 11
 PIN_SITZEN = 12
+
+# GPIO fuer die SIG-Leitung (gelbes Kabel) des Grove Ultrasonic Ranger
+PIN_SIG_ULTRASCHALL = 15
 
 # Wie lange "stehen"/"sitzen" aktiviert werden (Sekunden). "auf"/"ab" sind
 # stattdessen Halte-Aktionen: aktiv solange der Button gedrueckt ist.
@@ -105,16 +116,21 @@ def geraeteinfo():
 # WLAN-Update: neue Skript-Version per Datei-Upload einspielen
 # ---------------------------------------------------------------------------
 
-UPDATE_DATEI_TEMP = "main_neu.py"
-UPDATE_DATEI_BACKUP = "main_backup.py"
-UPDATE_ZIEL = "main.py"
+# Erlaubte Update-Ziele (Whitelist gegen beliebige Zielpfade). "python_pruefen"
+# steuert, ob die Datei per compile() als gueltiges Python geprueft wird
+# (nur main.py), "neustart" ob der Pico danach neu startet (index.html wird
+# beim naechsten Aufruf einfach frisch von der Platte gelesen, kein Reset noetig).
+UPDATE_ZIELE = {
+    "main.py": {"temp": "main_neu.py", "backup": "main_backup.py", "python_pruefen": True, "neustart": True},
+    "index.html": {"temp": "index_neu.html", "backup": "index_backup.html", "python_pruefen": False, "neustart": False},
+}
 
 
-def update_empfangen(client, laenge, bereits_gelesen):
+def update_empfangen(temp_datei, client, laenge, bereits_gelesen):
     """Liest genau `laenge` Bytes vom Socket und schreibt sie direkt (in
     kleinen Stuecken) in eine temporaere Datei, statt alles im RAM zu halten."""
     geschrieben = 0
-    with open(UPDATE_DATEI_TEMP, "wb") as f:
+    with open(temp_datei, "wb") as f:
         if bereits_gelesen:
             f.write(bereits_gelesen)
             geschrieben += len(bereits_gelesen)
@@ -127,36 +143,43 @@ def update_empfangen(client, laenge, bereits_gelesen):
     return geschrieben == laenge
 
 
-def update_pruefen(pfad):
-    """Prueft, ob die hochgeladene Datei zumindest syntaktisch gueltiges
-    Python ist, bevor main.py ueberschrieben wird."""
+def update_pruefen(pfad, python_pruefen):
+    """Prueft die hochgeladene Datei, bevor das Ziel ueberschrieben wird:
+    bei main.py per compile() auf gueltiges Python, sonst nur auf
+    nicht-leeren Inhalt. gc.collect() davor schafft moeglichst viel
+    zusammenhaengenden freien Speicher, da compile() kurzzeitig deutlich
+    mehr RAM braucht als die Dateigroesse selbst."""
+    gc.collect()
     try:
         with open(pfad) as f:
-            quelltext = f.read()
-        if not quelltext.strip():
+            inhalt = f.read()
+        if not inhalt.strip():
             return False, "Datei ist leer"
-        compile(quelltext, pfad, "exec")
+        if python_pruefen:
+            gc.collect()
+            compile(inhalt, pfad, "exec")
         return True, None
     except Exception as exc:
-        return False, "Ungueltiges Python: " + str(exc)
+        praefix = "Ungueltiges Python: " if python_pruefen else "Fehler: "
+        return False, praefix + str(exc)
 
 
-def update_uebernehmen():
-    """Ersetzt main.py durch die neue Datei, alte Version bleibt als Backup."""
+def update_uebernehmen(ziel, konfig):
+    """Ersetzt die Zieldatei durch die neue Version, alte Version bleibt als Backup."""
     try:
-        os.remove(UPDATE_DATEI_BACKUP)
+        os.remove(konfig["backup"])
     except OSError:
         pass
     try:
-        os.rename(UPDATE_ZIEL, UPDATE_DATEI_BACKUP)
+        os.rename(ziel, konfig["backup"])
     except OSError:
         pass
-    os.rename(UPDATE_DATEI_TEMP, UPDATE_ZIEL)
+    os.rename(konfig["temp"], ziel)
 
 
-def update_aufraeumen():
+def update_aufraeumen(temp_datei):
     try:
-        os.remove(UPDATE_DATEI_TEMP)
+        os.remove(temp_datei)
     except OSError:
         pass
 
@@ -285,17 +308,138 @@ def automatik_status():
     }
 
 
-def automatik_thread():
-    """Prueft laufend, ob die Zeit fuer die aktuelle Phase abgelaufen ist."""
+def automatik_tick():
+    """Prueft, ob die Zeit fuer die aktuelle Automatik-Phase abgelaufen ist."""
     global automatik_phase, automatik_phase_start
-    while True:
+    if not automatik_aktiv:
+        return
+    dauer = automatik_sitzen_sek if automatik_phase == "sitzen" else automatik_stehen_sek
+    if time.time() - automatik_phase_start >= dauer:
+        neue_phase = "stehen" if automatik_phase == "sitzen" else "sitzen"
+        aktion_ausfuehren(neue_phase, "automatik")
+        automatik_phase = neue_phase
+        automatik_phase_start = time.time()
+
+
+# ---------------------------------------------------------------------------
+# Bewegungserkennung: fragt per Grove Ultrasonic Ranger in einem eigenen,
+# von der Automatik-Pruefung entkoppelten Intervall die Distanz ab. Aendert
+# sich die Distanz (Bewegung), wird die Automatik eingeschaltet. Bleibt sie
+# laenger als der Timeout unveraendert, wird die Automatik ausgeschaltet.
+# Beide Zeiten sind im Web einstellbar.
+# ---------------------------------------------------------------------------
+
+# Ab wie viel cm Unterschied zur letzten Referenzmessung eine "Aenderung"
+# (Bewegung) zaehlt - Toleranz gegen normales Sensor-Rauschen
+ANWESENHEIT_AENDERUNG_TOLERANZ_CM = 3
+
+anwesenheit_aktiv = False
+anwesenheit_abfrage_sek = 3          # wie oft der Sensor abgefragt wird
+anwesenheit_keine_aenderung_sek = 10 * 60  # Timeout bis zum Abschalten
+anwesenheit_letzte_distanz_cm = None
+
+# Referenzwert, Zeitpunkt der letzten Aenderung und Zeitpunkt der letzten
+# Messung (fuer das vom 1-Sekunden-Haupttick entkoppelte Abfrage-Intervall)
+anwesenheit_referenz_distanz_cm = None
+anwesenheit_letzte_aenderung_zeit = 0
+anwesenheit_letzte_messung_zeit = 0
+
+
+def distanz_messen_cm(sig_pin=PIN_SIG_ULTRASCHALL, timeout_us=30_000):
+    """Einzelmessung ueber die Single-Wire-Leitung des Grove Ultrasonic
+    Ranger. Gibt die Distanz in cm zurueck, oder None bei Timeout
+    (kein Objekt in Reichweite bzw. kein Echo empfangen)."""
+    trigger = Pin(sig_pin, Pin.OUT)
+    trigger.value(0)
+    time.sleep_us(2)
+    trigger.value(1)
+    time.sleep_us(10)  # Trigger-Impuls, Datenblatt verlangt >= 10us
+    trigger.value(0)
+
+    echo = Pin(sig_pin, Pin.IN)
+    dauer_us = time_pulse_us(echo, 1, timeout_us)
+    if dauer_us < 0:
+        return None
+
+    return int(dauer_us / 58)  # Laufzeit -> Zentimeter, ganze Zahl (.x wird ignoriert)
+
+
+def anwesenheit_einstellen(aktiv, abfrage_sek, keine_aenderung_min):
+    global anwesenheit_aktiv, anwesenheit_abfrage_sek, anwesenheit_keine_aenderung_sek
+    global anwesenheit_referenz_distanz_cm, anwesenheit_letzte_aenderung_zeit
+    global anwesenheit_letzte_messung_zeit
+
+    anwesenheit_abfrage_sek = max(1, float(abfrage_sek))
+    anwesenheit_keine_aenderung_sek = max(60, float(keine_aenderung_min) * 60)
+    anwesenheit_aktiv = bool(aktiv)
+    anwesenheit_referenz_distanz_cm = None
+    anwesenheit_letzte_aenderung_zeit = time.time()
+    anwesenheit_letzte_messung_zeit = 0  # naechster Tick misst sofort
+    return True
+
+
+def anwesenheit_status():
+    rest_sek = anwesenheit_keine_aenderung_sek - (time.time() - anwesenheit_letzte_aenderung_zeit)
+    return {
+        "aktiv": anwesenheit_aktiv,
+        "abfrage_sek": anwesenheit_abfrage_sek,
+        "keine_aenderung_min": anwesenheit_keine_aenderung_sek / 60,
+        "distanz_cm": anwesenheit_letzte_distanz_cm,
+        "rest_sek": max(0, int(rest_sek)) if anwesenheit_aktiv else 0,
+    }
+
+
+def anwesenheit_tick():
+    """Wird jede Sekunde aufgerufen, misst aber nur alle
+    anwesenheit_abfrage_sek Sekunden tatsaechlich (entkoppeltes Intervall).
+    Bewegung (Distanzaenderung) schaltet die Automatik ein, laengerer
+    Stillstand (Timeout) schaltet sie wieder aus."""
+    global anwesenheit_letzte_distanz_cm, anwesenheit_letzte_messung_zeit
+    global anwesenheit_referenz_distanz_cm, anwesenheit_letzte_aenderung_zeit
+
+    if not anwesenheit_aktiv:
+        return
+
+    jetzt = time.time()
+    if jetzt - anwesenheit_letzte_messung_zeit < anwesenheit_abfrage_sek:
+        return
+    anwesenheit_letzte_messung_zeit = jetzt
+
+    distanz = distanz_messen_cm()
+    anwesenheit_letzte_distanz_cm = distanz
+    print("Ultraschall:", "{} cm".format(distanz) if distanz is not None else "kein Echo")
+
+    if distanz is None:
+        return  # kein Echo liefert keinen verwertbaren Vergleichswert
+
+    aenderung_erkannt = (
+        anwesenheit_referenz_distanz_cm is not None
+        and abs(distanz - anwesenheit_referenz_distanz_cm) > ANWESENHEIT_AENDERUNG_TOLERANZ_CM
+    )
+
+    if anwesenheit_referenz_distanz_cm is None or aenderung_erkannt:
+        anwesenheit_referenz_distanz_cm = distanz
+        anwesenheit_letzte_aenderung_zeit = jetzt
+        if aenderung_erkannt and not automatik_aktiv:
+            automatik_einschalten(automatik_sitzen_sek / 60, automatik_stehen_sek / 60, "sitzen")
+            print("Bewegung erkannt - Automatik automatisch gestartet")
+        return
+
+    if jetzt - anwesenheit_letzte_aenderung_zeit >= anwesenheit_keine_aenderung_sek:
         if automatik_aktiv:
-            dauer = automatik_sitzen_sek if automatik_phase == "sitzen" else automatik_stehen_sek
-            if time.time() - automatik_phase_start >= dauer:
-                neue_phase = "stehen" if automatik_phase == "sitzen" else "sitzen"
-                aktion_ausfuehren(neue_phase, "automatik")
-                automatik_phase = neue_phase
-                automatik_phase_start = time.time()
+            automatik_ausschalten()
+            print(int(anwesenheit_keine_aenderung_sek), "Sek. keine Bewegung - Automatik automatisch gestoppt")
+        anwesenheit_letzte_aenderung_zeit = jetzt  # Timer neu starten
+
+
+def hintergrund_thread():
+    """Laeuft dauerhaft auf dem zweiten Kern und kuemmert sich sowohl um
+    die Automatik als auch um die Bewegungserkennung (RP2040 kann nur einen
+    zusaetzlichen _thread gleichzeitig ausfuehren, daher beides in einer
+    Schleife statt in zwei getrennten Threads)."""
+    while True:
+        automatik_tick()
+        anwesenheit_tick()
         time.sleep(1)
 
 
@@ -303,754 +447,28 @@ def automatik_thread():
 # Webseite (modernes UI, 2x2 Button-Grid)
 # ---------------------------------------------------------------------------
 
-SEITE_HTML = """<!DOCTYPE html>
-<html lang="de">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Pico Steuerung</title>
-<style>
-  :root {
-    color-scheme: dark;
-    --bg-1: #0b1120;
-    --bg-2: #1e293b;
-    --accent: #38bdf8;
-    --accent-2: #a855f7;
-    --gruen: #4ade80;
-    --rot: #f87171;
-    --card: rgba(255,255,255,0.06);
-    --card-border: rgba(255,255,255,0.12);
-    --text: #e2e8f0;
-    --text-dim: #94a3b8;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
-    color: var(--text);
-    padding: 24px;
-    background: var(--bg-1);
-    overflow-x: hidden;
-  }
-  body::before, body::after {
-    content: "";
-    position: fixed;
-    width: 60vmax;
-    height: 60vmax;
-    border-radius: 50%;
-    filter: blur(90px);
-    opacity: 0.28;
-    z-index: -1;
-    animation: schweben 16s ease-in-out infinite alternate;
-  }
-  body::before {
-    background: var(--accent);
-    top: -20vmax;
-    left: -20vmax;
-  }
-  body::after {
-    background: var(--accent-2);
-    bottom: -22vmax;
-    right: -18vmax;
-    animation-delay: -8s;
-  }
-  @keyframes schweben {
-    from { transform: translate(0, 0) scale(1); }
-    to { transform: translate(4vmax, 3vmax) scale(1.08); }
-  }
-  .karte {
-    position: relative;
-    width: 100%;
-    max-width: 420px;
-    background: var(--card);
-    border: 1px solid var(--card-border);
-    backdrop-filter: blur(20px);
-    border-radius: 26px;
-    padding: 30px 26px;
-    box-shadow: 0 20px 60px rgba(0,0,0,0.45);
-  }
-  .kopf {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 10px;
-    margin-bottom: 4px;
-  }
-  h1 {
-    margin: 0;
-    font-size: 21px;
-    text-align: center;
-    letter-spacing: 0.3px;
-  }
-  .live-punkt {
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    background: var(--text-dim);
-    flex-shrink: 0;
-  }
-  .live-punkt.online {
-    background: var(--gruen);
-    box-shadow: 0 0 0 0 rgba(74,222,128,0.6);
-    animation: puls 2s ease-out infinite;
-  }
-  .live-punkt.offline { background: var(--rot); }
-  @keyframes puls {
-    0%   { box-shadow: 0 0 0 0 rgba(74,222,128,0.55); }
-    70%  { box-shadow: 0 0 0 8px rgba(74,222,128,0); }
-    100% { box-shadow: 0 0 0 0 rgba(74,222,128,0); }
-  }
-  .info-zeile {
-    text-align: center;
-    font-size: 11.5px;
-    color: var(--text-dim);
-    margin-bottom: 22px;
-    letter-spacing: 0.2px;
-  }
-  .status {
-    text-align: center;
-    color: var(--text-dim);
-    font-size: 13px;
-    margin-bottom: 20px;
-    min-height: 18px;
-    transition: color 0.2s ease;
-  }
-  .status.ok { color: var(--gruen); }
-  .status.fehler { color: var(--rot); }
-  .grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-  }
-  button {
-    appearance: none;
-    border: 1px solid var(--card-border);
-    border-radius: 18px;
-    padding: 22px 12px;
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--text);
-    background: linear-gradient(160deg, rgba(56,189,248,0.18), rgba(168,85,247,0.12));
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 10px;
-    cursor: pointer;
-    transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
-  }
-  button .icon { font-size: 26px; }
-  button:hover {
-    box-shadow: 0 10px 24px rgba(56,189,248,0.25);
-    transform: translateY(-2px);
-  }
-  button:active {
-    transform: translateY(0) scale(0.96);
-    background: linear-gradient(160deg, rgba(56,189,248,0.35), rgba(168,85,247,0.25));
-  }
-  button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-    transform: none;
-  }
-  footer {
-    margin-top: 24px;
-    text-align: center;
-    font-size: 11px;
-    color: var(--text-dim);
-    letter-spacing: 0.4px;
-  }
-  .trenner {
-    height: 1px;
-    background: var(--card-border);
-    margin: 26px 0 20px;
-  }
-  .abschnitt-kopf {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 16px;
-  }
-  .abschnitt-kopf .titel {
-    font-weight: 600;
-    font-size: 15px;
-  }
-  .abschnitt-kopf .zaehler {
-    font-size: 11px;
-    color: var(--text-dim);
-    background: rgba(255,255,255,0.06);
-    border-radius: 999px;
-    padding: 3px 9px;
-  }
-  .schalter {
-    position: relative;
-    display: inline-block;
-    width: 46px;
-    height: 26px;
-    flex-shrink: 0;
-  }
-  .schalter input {
-    opacity: 0;
-    width: 0;
-    height: 0;
-  }
-  .schalter-slider {
-    position: absolute;
-    cursor: pointer;
-    inset: 0;
-    background: rgba(255,255,255,0.15);
-    border-radius: 999px;
-    transition: background 0.2s ease;
-  }
-  .schalter-slider::before {
-    content: "";
-    position: absolute;
-    height: 20px;
-    width: 20px;
-    left: 3px;
-    top: 3px;
-    background: white;
-    border-radius: 50%;
-    transition: transform 0.2s ease;
-  }
-  .schalter input:checked + .schalter-slider {
-    background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  }
-  .schalter input:checked + .schalter-slider::before {
-    transform: translateX(20px);
-  }
-  .automatik-felder {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
-    margin-bottom: 14px;
-  }
-  .feld label {
-    display: block;
-    font-size: 11px;
-    color: var(--text-dim);
-    margin-bottom: 6px;
-  }
-  .feld input, .feld select {
-    width: 100%;
-    background: rgba(255,255,255,0.05);
-    border: 1px solid var(--card-border);
-    border-radius: 10px;
-    padding: 10px;
-    color: var(--text);
-    font-size: 14px;
-  }
-  .feld input:disabled, .feld select:disabled {
-    opacity: 0.5;
-  }
-  .automatik-info {
-    text-align: center;
-    font-size: 13px;
-    color: var(--text-dim);
-    min-height: 18px;
-  }
-  .automatik-status {
-    text-align: center;
-    border-radius: 16px;
-    padding: 16px;
-    margin-bottom: 4px;
-    background: rgba(255,255,255,0.04);
-    border: 1px solid var(--card-border);
-    transition: background 0.2s ease, border-color 0.2s ease;
-  }
-  .automatik-status.aktiv {
-    background: linear-gradient(160deg, rgba(56,189,248,0.14), rgba(168,85,247,0.10));
-    border-color: rgba(56,189,248,0.35);
-  }
-  .automatik-phase {
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    color: var(--accent);
-    margin-bottom: 6px;
-  }
-  .automatik-timer {
-    font-size: 32px;
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-    letter-spacing: 1px;
-  }
-  .automatik-sub {
-    font-size: 12px;
-    color: var(--text-dim);
-    margin-top: 4px;
-  }
-  .verlauf-liste {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    max-height: 220px;
-    overflow-y: auto;
-  }
-  .verlauf-liste li {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 9px 4px;
-    border-bottom: 1px solid var(--card-border);
-    font-size: 13px;
-  }
-  .verlauf-liste li:last-child { border-bottom: none; }
-  .verlauf-icon {
-    width: 30px;
-    height: 30px;
-    flex-shrink: 0;
-    border-radius: 10px;
-    background: rgba(255,255,255,0.06);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 14px;
-  }
-  .verlauf-text { flex: 1; }
-  .verlauf-badge {
-    font-size: 9.5px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.4px;
-    color: var(--accent-2);
-    background: rgba(168,85,247,0.14);
-    border-radius: 999px;
-    padding: 2px 7px;
-    margin-left: 6px;
-  }
-  .verlauf-zeit {
-    font-size: 11.5px;
-    color: var(--text-dim);
-    white-space: nowrap;
-  }
-  .verlauf-leer {
-    text-align: center;
-    font-size: 12.5px;
-    color: var(--text-dim);
-    padding: 10px 0;
-  }
-  .update-datei {
-    display: block;
-    text-align: center;
-    padding: 14px;
-    border: 1px dashed var(--card-border);
-    border-radius: 12px;
-    font-size: 13px;
-    color: var(--text-dim);
-    cursor: pointer;
-    transition: border-color 0.15s ease, color 0.15s ease;
-    margin-bottom: 12px;
-  }
-  .update-datei:hover {
-    border-color: var(--accent);
-    color: var(--text);
-  }
-  .update-datei.gewaehlt {
-    border-color: var(--accent);
-    color: var(--text);
-  }
-  .update-aktionen {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px;
-  }
-  .update-btn, .neustart-btn {
-    appearance: none;
-    border: 1px solid var(--card-border);
-    border-radius: 12px;
-    padding: 11px 12px;
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-    color: var(--text);
-    transition: opacity 0.15s ease, transform 0.12s ease;
-  }
-  .update-btn {
-    background: linear-gradient(160deg, rgba(56,189,248,0.28), rgba(168,85,247,0.20));
-  }
-  .neustart-btn {
-    background: rgba(255,255,255,0.05);
-  }
-  .update-btn:disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
-  }
-  .update-btn:active:not(:disabled), .neustart-btn:active {
-    transform: scale(0.97);
-  }
-  .update-info {
-    text-align: center;
-    font-size: 11.5px;
-    color: var(--text-dim);
-    margin-top: 10px;
-    line-height: 1.5;
-  }
-  .update-info.fehler { color: var(--rot); }
-  .update-info.ok { color: var(--gruen); }
-</style>
-</head>
-<body>
-  <div class="karte">
-    <div class="kopf">
-      <span class="live-punkt" id="livePunkt"></span>
-      <h1>Pico Steuerung</h1>
-    </div>
-    <div class="info-zeile" id="infoZeile">Verbinde...</div>
-    <div class="status" id="status">Bereit</div>
-    <div class="grid">
-      <button data-aktion="auf" data-modus="halten"><span class="icon">&#8593;</span>Auf</button>
-      <button data-aktion="ab" data-modus="halten"><span class="icon">&#8595;</span>Ab</button>
-      <button data-aktion="stehen" data-modus="impuls"><span class="icon">&#128694;</span>Stehen</button>
-      <button data-aktion="sitzen" data-modus="impuls"><span class="icon">&#128719;</span>Sitzen</button>
-    </div>
+INDEX_DATEI = "index.html"
 
-    <div class="trenner"></div>
 
-    <div class="abschnitt-kopf">
-      <span class="titel">Automatik</span>
-      <label class="schalter">
-        <input type="checkbox" id="automatikToggle">
-        <span class="schalter-slider"></span>
-      </label>
-    </div>
-    <div class="automatik-felder">
-      <div class="feld">
-        <label for="sitzenMin">Sitzen (Min)</label>
-        <input type="number" id="sitzenMin" min="1" value="90">
-      </div>
-      <div class="feld">
-        <label for="stehenMin">Stehen (Min)</label>
-        <input type="number" id="stehenMin" min="1" value="30">
-      </div>
-      <div class="feld" style="grid-column: 1 / -1;">
-        <label for="startPhase">Aktuelle Position</label>
-        <select id="startPhase">
-          <option value="sitzen">Sitzen</option>
-          <option value="stehen">Stehen</option>
-        </select>
-      </div>
-    </div>
-    <div class="automatik-status" id="automatikStatus">
-      <div class="automatik-phase" id="automatikPhase">Automatik</div>
-      <div class="automatik-timer" id="automatikTimer">--:--</div>
-      <div class="automatik-sub" id="automatikSub">ausgeschaltet</div>
-    </div>
-
-    <div class="trenner"></div>
-
-    <div class="abschnitt-kopf">
-      <span class="titel">Verlauf</span>
-    </div>
-    <ul class="verlauf-liste" id="verlaufListe">
-      <li class="verlauf-leer">Noch keine Aktionen</li>
-    </ul>
-
-    <div class="trenner"></div>
-
-    <div class="abschnitt-kopf">
-      <span class="titel">Update</span>
-      <span class="zaehler" id="versionAnzeige">v?</span>
-    </div>
-    <div class="update-bereich">
-      <label class="update-datei" for="updateDatei">
-        <span id="updateDateiName">Datei auswaehlen (.py)</span>
-      </label>
-      <input type="file" id="updateDatei" accept=".py" hidden>
-      <div class="update-aktionen">
-        <button type="button" class="update-btn" id="updateButton" disabled>Update hochladen</button>
-        <button type="button" class="neustart-btn" id="neustartButton">Neustart</button>
-      </div>
-      <div class="update-info" id="updateInfo">Ersetzt main.py auf dem Pico und startet danach neu. Ungueltige Dateien werden automatisch abgelehnt.</div>
-    </div>
-
-    <div class="trenner"></div>
-    <footer>Raspberry Pi Pico W</footer>
-  </div>
-
-<script>
-  const statusEl = document.getElementById('status');
-  const buttons = document.querySelectorAll('button[data-aktion]');
-
-  function zeigeStatus(text, art) {
-    statusEl.className = art ? ('status ' + art) : 'status';
-    statusEl.textContent = text;
-  }
-
-  async function anfrage(pfad, aktion, erfolgstext) {
-    try {
-      const res = await fetch(pfad);
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const data = await res.json();
-      zeigeStatus(data.ok ? erfolgstext : ('Fehler bei "' + aktion + '"'), data.ok ? 'ok' : 'fehler');
-      if (data.ok) verlaufAbrufen();
-    } catch (err) {
-      zeigeStatus('Verbindungsfehler', 'fehler');
-    }
-  }
-
-  // "stehen"/"sitzen": ein Klick = kurzer Impuls
-  function impuls(aktion) {
-    zeigeStatus('Sende "' + aktion + '" ...');
-    anfrage('/aktion/' + aktion, aktion, '"' + aktion + '" ausgefuehrt');
-  }
-
-  // "auf"/"ab": aktiv solange der Button gedrueckt gehalten wird
-  function haltenStart(btn, aktion) {
-    btn.setPointerCapture && btn.pointerId !== undefined && btn.setPointerCapture(btn.pointerId);
-    zeigeStatus('"' + aktion + '" haelt...');
-    anfrage('/start/' + aktion, aktion, '"' + aktion + '" aktiv');
-  }
-
-  function haltenStop(aktion) {
-    zeigeStatus('"' + aktion + '" gestoppt');
-    anfrage('/stop/' + aktion, aktion, '"' + aktion + '" gestoppt');
-  }
-
-  buttons.forEach(btn => {
-    const aktion = btn.dataset.aktion;
-
-    if (btn.dataset.modus === 'halten') {
-      btn.addEventListener('pointerdown', (ev) => {
-        ev.preventDefault();
-        haltenStart(btn, aktion);
-      });
-      ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => {
-        btn.addEventListener(ev, () => haltenStop(aktion));
-      });
-    } else {
-      btn.addEventListener('click', () => impuls(aktion));
-    }
-  });
-
-  // --- Automatik: wechselt nach Ablauf der Zeit selbststaendig zwischen Sitzen/Stehen ---
-  const automatikToggle = document.getElementById('automatikToggle');
-  const sitzenInput = document.getElementById('sitzenMin');
-  const stehenInput = document.getElementById('stehenMin');
-  const startPhaseSelect = document.getElementById('startPhase');
-  const automatikStatusEl = document.getElementById('automatikStatus');
-  const automatikPhaseEl = document.getElementById('automatikPhase');
-  const automatikTimerEl = document.getElementById('automatikTimer');
-  const automatikSubEl = document.getElementById('automatikSub');
-
-  let automatikSyncTimer = null;
-  let automatikTickTimer = null;
-  let restSekunden = 0;
-
-  function formatZeit(sek) {
-    sek = Math.max(0, Math.round(sek));
-    const m = Math.floor(sek / 60);
-    const s = sek % 60;
-    return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
-  }
-
-  function timerAnzeigeAktualisieren() {
-    automatikTimerEl.textContent = formatZeit(restSekunden);
-  }
-
-  function automatikAnzeigen(data) {
-    automatikToggle.checked = !!data.aktiv;
-    sitzenInput.disabled = !!data.aktiv;
-    stehenInput.disabled = !!data.aktiv;
-    startPhaseSelect.disabled = !!data.aktiv;
-    automatikStatusEl.classList.toggle('aktiv', !!data.aktiv);
-
-    if (data.aktiv) {
-      if (data.sitzen_min) sitzenInput.value = data.sitzen_min;
-      if (data.stehen_min) stehenInput.value = data.stehen_min;
-
-      const aktuellePhase = data.phase === 'sitzen' ? 'Sitzen' : 'Stehen';
-      const naechstePhase = data.phase === 'sitzen' ? 'Stehen' : 'Sitzen';
-      automatikPhaseEl.textContent = 'Aktiv - ' + aktuellePhase;
-      automatikSubEl.textContent = 'bis Wechsel zu "' + naechstePhase + '"';
-      restSekunden = data.rest_sek;
-      timerAnzeigeAktualisieren();
-
-      if (!automatikTickTimer) {
-        automatikTickTimer = setInterval(() => {
-          restSekunden = Math.max(0, restSekunden - 1);
-          timerAnzeigeAktualisieren();
-        }, 1000);
-      }
-      if (!automatikSyncTimer) automatikSyncTimer = setInterval(automatikStatusAbrufen, 5000);
-    } else {
-      automatikPhaseEl.textContent = 'Automatik';
-      automatikTimerEl.textContent = '--:--';
-      automatikSubEl.textContent = 'ausgeschaltet';
-      if (automatikTickTimer) { clearInterval(automatikTickTimer); automatikTickTimer = null; }
-      if (automatikSyncTimer) { clearInterval(automatikSyncTimer); automatikSyncTimer = null; }
-    }
-  }
-
-  async function automatikStatusAbrufen() {
-    try {
-      const res = await fetch('/automatik/status');
-      const data = await res.json();
-      automatikAnzeigen(data);
-    } catch (err) {
-      // Status wird beim naechsten Intervall erneut versucht
-    }
-  }
-
-  automatikToggle.addEventListener('change', async () => {
-    try {
-      if (automatikToggle.checked) {
-        const sitzen = sitzenInput.value || 90;
-        const stehen = stehenInput.value || 30;
-        const phase = startPhaseSelect.value;
-        const res = await fetch('/automatik/start?sitzen=' + sitzen + '&stehen=' + stehen + '&phase=' + phase);
-        automatikAnzeigen(await res.json());
-      } else {
-        const res = await fetch('/automatik/stop');
-        automatikAnzeigen(await res.json());
-      }
-    } catch (err) {
-      automatikSubEl.textContent = 'Verbindungsfehler';
-    }
-  });
-
-  // --- Info-Zeile (IP/Laufzeit) + Online-Anzeige ---
-  const infoZeile = document.getElementById('infoZeile');
-  const livePunkt = document.getElementById('livePunkt');
-  const versionAnzeige = document.getElementById('versionAnzeige');
-
-  function formatDauer(sek) {
-    sek = Math.max(0, Math.floor(sek));
-    const h = Math.floor(sek / 3600);
-    const m = Math.floor((sek % 3600) / 60);
-    if (h > 0) return h + 'h ' + m + 'm';
-    if (m > 0) return m + 'm';
-    return sek + 's';
-  }
-
-  async function infoAbrufen() {
-    try {
-      const res = await fetch('/info');
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const data = await res.json();
-      infoZeile.textContent = (data.ip || '?') + ' - Laufzeit ' + formatDauer(data.uptime_sek);
-      livePunkt.className = 'live-punkt online';
-      if (data.version) versionAnzeige.textContent = 'v' + data.version;
-    } catch (err) {
-      infoZeile.textContent = 'Keine Verbindung zum Pico';
-      livePunkt.className = 'live-punkt offline';
-    }
-  }
-
-  // --- Verlauf der letzten Aktionen ---
-  const verlaufListe = document.getElementById('verlaufListe');
-  const VERLAUF_ICON = { auf: '&#8593;', ab: '&#8595;', stehen: '&#128694;', sitzen: '&#128719;' };
-  const VERLAUF_LABEL = { auf: 'Auf', ab: 'Ab', stehen: 'Stehen', sitzen: 'Sitzen' };
-
-  function formatVor(sek) {
-    if (sek < 60) return 'vor ' + sek + 's';
-    const m = Math.floor(sek / 60);
-    if (m < 60) return 'vor ' + m + 'm';
-    return 'vor ' + Math.floor(m / 60) + 'h';
-  }
-
-  async function verlaufAbrufen() {
-    try {
-      const res = await fetch('/verlauf');
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const eintraege = await res.json();
-      if (!eintraege.length) {
-        verlaufListe.innerHTML = '<li class="verlauf-leer">Noch keine Aktionen</li>';
-        return;
-      }
-      verlaufListe.innerHTML = eintraege.map(e => {
-        const icon = VERLAUF_ICON[e.aktion] || '&#8226;';
-        const label = VERLAUF_LABEL[e.aktion] || e.aktion;
-        const badge = e.quelle === 'automatik' ? '<span class="verlauf-badge">Automatik</span>' : '';
-        return '<li>' +
-          '<span class="verlauf-icon">' + icon + '</span>' +
-          '<span class="verlauf-text">' + label + badge + '</span>' +
-          '<span class="verlauf-zeit">' + formatVor(e.vor_sek) + '</span>' +
-        '</li>';
-      }).join('');
-    } catch (err) {
-      // Verlauf wird beim naechsten Poll erneut versucht
-    }
-  }
-
-  // --- Update: neue Skript-Version hochladen, Geraet startet danach neu ---
-  const updateDatei = document.getElementById('updateDatei');
-  const updateDateiLabel = document.querySelector('.update-datei');
-  const updateDateiName = document.getElementById('updateDateiName');
-  const updateButton = document.getElementById('updateButton');
-  const neustartButton = document.getElementById('neustartButton');
-  const updateInfo = document.getElementById('updateInfo');
-
-  function updateInfoAnzeigen(text, art) {
-    updateInfo.className = art ? ('update-info ' + art) : 'update-info';
-    updateInfo.textContent = text;
-  }
-
-  updateDatei.addEventListener('change', () => {
-    const datei = updateDatei.files[0];
-    if (datei) {
-      updateDateiName.textContent = datei.name;
-      updateDateiLabel.classList.add('gewaehlt');
-      updateButton.disabled = false;
-    } else {
-      updateDateiName.textContent = 'Datei auswaehlen (.py)';
-      updateDateiLabel.classList.remove('gewaehlt');
-      updateButton.disabled = true;
-    }
-  });
-
-  updateButton.addEventListener('click', async () => {
-    const datei = updateDatei.files[0];
-    if (!datei) return;
-    if (!confirm('main.py mit "' + datei.name + '" ersetzen und Pico neu starten?')) return;
-
-    updateButton.disabled = true;
-    neustartButton.disabled = true;
-    updateInfoAnzeigen('Lade hoch...');
-    try {
-      const inhalt = await datei.arrayBuffer();
-      const res = await fetch('/update', { method: 'POST', body: inhalt });
-      const data = await res.json();
-      if (data.ok) {
-        updateInfoAnzeigen('Update erfolgreich - Pico startet neu. Seite in ca. 10s neu laden.', 'ok');
-        setTimeout(() => location.reload(), 10000);
-      } else {
-        updateInfoAnzeigen('Fehler: ' + (data.fehler || 'unbekannt'), 'fehler');
-        updateButton.disabled = false;
-        neustartButton.disabled = false;
-      }
-    } catch (err) {
-      updateInfoAnzeigen('Verbindung getrennt - falls das Update angenommen wurde, startet der Pico gerade neu.', 'fehler');
-      neustartButton.disabled = false;
-    }
-  });
-
-  neustartButton.addEventListener('click', async () => {
-    if (!confirm('Pico jetzt neu starten?')) return;
-    neustartButton.disabled = true;
-    updateInfoAnzeigen('Neustart...');
-    try {
-      await fetch('/neustart');
-    } catch (err) {
-      // Verbindung bricht durch den Neustart erwartungsgemaess ab
-    }
-    setTimeout(() => location.reload(), 8000);
-  });
-
-  infoAbrufen();
-  verlaufAbrufen();
-  setInterval(infoAbrufen, 20000);
-  setInterval(verlaufAbrufen, 10000);
-
-  automatikStatusAbrufen();
-</script>
-</body>
-</html>
-"""
+def index_seite_senden(client):
+    """Streamt index.html in kleinen Stuecken vom Dateisystem, statt den
+    kompletten Inhalt dauerhaft als String im RAM zu halten (main.py bleibt
+    dadurch klein genug, um sich per Web-Update selbst syntaktisch pruefen
+    zu koennen, ohne dass der Pico dabei aus dem Speicher laeuft)."""
+    groesse = os.stat(INDEX_DATEI)[6]
+    header = (
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/html; charset=utf-8\r\n"
+        "Content-Length: {laenge}\r\n"
+        "Connection: close\r\n\r\n"
+    ).format(laenge=groesse)
+    _sende_alles(client, header.encode("utf-8"))
+    with open(INDEX_DATEI, "rb") as f:
+        while True:
+            stueck = f.read(512)
+            if not stueck:
+                break
+            _sende_alles(client, stueck)
 
 
 # ---------------------------------------------------------------------------
@@ -1132,39 +550,54 @@ def anfrage_bearbeiten(client):
         pfad = teile[1] if len(teile) > 1 else "/"
 
         if methode == "POST" and pfad.startswith("/update"):
+            parameter = query_parsen(pfad)
+            ziel = parameter.get("ziel", "main.py")
+            konfig = UPDATE_ZIELE.get(ziel)
+
             laenge_text = header_wert(kopf_text, "Content-Length")
             laenge = int(laenge_text) if laenge_text and laenge_text.isdigit() else 0
 
-            if laenge <= 0 or laenge > UPDATE_MAX_BYTES:
+            if konfig is None:
+                http_antwort(
+                    client, "400 Bad Request",
+                    json.dumps({"ok": False, "fehler": "Unbekanntes Update-Ziel"}),
+                    "application/json",
+                )
+            elif laenge <= 0 or laenge > UPDATE_MAX_BYTES:
                 http_antwort(
                     client, "400 Bad Request",
                     json.dumps({"ok": False, "fehler": "Datei fehlt oder ist zu gross"}),
                     "application/json",
                 )
             else:
-                vollstaendig = update_empfangen(client, laenge, body_bereits_gelesen)
+                vollstaendig = update_empfangen(konfig["temp"], client, laenge, body_bereits_gelesen)
                 if not vollstaendig:
-                    update_aufraeumen()
+                    update_aufraeumen(konfig["temp"])
                     http_antwort(
                         client, "400 Bad Request",
                         json.dumps({"ok": False, "fehler": "Uebertragung unvollstaendig"}),
                         "application/json",
                     )
                 else:
-                    gueltig, fehler = update_pruefen(UPDATE_DATEI_TEMP)
+                    gueltig, fehler = update_pruefen(konfig["temp"], konfig["python_pruefen"])
                     if not gueltig:
-                        update_aufraeumen()
+                        update_aufraeumen(konfig["temp"])
                         http_antwort(
                             client, "400 Bad Request",
                             json.dumps({"ok": False, "fehler": fehler}),
                             "application/json",
                         )
                     else:
-                        update_uebernehmen()
-                        http_antwort(client, "200 OK", json.dumps({"ok": True}), "application/json")
-                        client.close()
-                        time.sleep(0.5)
-                        machine.reset()
+                        update_uebernehmen(ziel, konfig)
+                        http_antwort(
+                            client, "200 OK",
+                            json.dumps({"ok": True, "neustart": konfig["neustart"]}),
+                            "application/json",
+                        )
+                        if konfig["neustart"]:
+                            client.close()
+                            time.sleep(0.5)
+                            machine.reset()
         elif pfad.startswith("/neustart"):
             http_antwort(client, "200 OK", json.dumps({"ok": True}), "application/json")
             client.close()
@@ -1190,6 +623,22 @@ def anfrage_bearbeiten(client):
             http_antwort(client, "200 OK", json.dumps(automatik_status()), "application/json")
         elif pfad.startswith("/automatik/status"):
             http_antwort(client, "200 OK", json.dumps(automatik_status()), "application/json")
+        elif pfad.startswith("/anwesenheit/start"):
+            parameter = query_parsen(pfad)
+            try:
+                anwesenheit_einstellen(
+                    True,
+                    parameter.get("abfrage", "3"),
+                    parameter.get("timeout", "10"),
+                )
+                http_antwort(client, "200 OK", json.dumps(anwesenheit_status()), "application/json")
+            except (ValueError, TypeError):
+                http_antwort(client, "400 Bad Request", json.dumps({"aktiv": False}), "application/json")
+        elif pfad.startswith("/anwesenheit/stop"):
+            anwesenheit_einstellen(False, anwesenheit_abfrage_sek, anwesenheit_keine_aenderung_sek / 60)
+            http_antwort(client, "200 OK", json.dumps(anwesenheit_status()), "application/json")
+        elif pfad.startswith("/anwesenheit/status"):
+            http_antwort(client, "200 OK", json.dumps(anwesenheit_status()), "application/json")
         elif pfad.startswith("/aktion/"):
             name = pfad.split("/aktion/", 1)[1].split("?")[0]
             erfolg = aktion_ausfuehren(name)
@@ -1218,7 +667,7 @@ def anfrage_bearbeiten(client):
                 "application/json",
             )
         elif pfad == "/" or pfad == "/index.html":
-            http_antwort(client, "200 OK", SEITE_HTML)
+            index_seite_senden(client)
         else:
             http_antwort(client, "404 Not Found", "Nicht gefunden")
     except Exception as exc:
@@ -1249,7 +698,7 @@ def main():
             "setzen oder eine wlan.conf mit ssid/password anlegen."
         )
     mit_wlan_verbinden(ssid, passwort)
-    _thread.start_new_thread(automatik_thread, ())
+    _thread.start_new_thread(hintergrund_thread, ())
     webserver_starten()
 
 
