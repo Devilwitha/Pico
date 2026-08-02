@@ -71,9 +71,10 @@ class PicoClient:
     def anwesenheit_status(self):
         return self._anfrage("/anwesenheit/status")
 
-    def anwesenheit_start(self, abfrage_sek, timeout_min):
+    def anwesenheit_start(self, abfrage_sek, timeout_min, schwellwert_cm):
         return self._anfrage(
-            "/anwesenheit/start?abfrage={}&timeout={}".format(abfrage_sek, timeout_min)
+            "/anwesenheit/start?abfrage={}&timeout={}&schwellwert={}".format(
+                abfrage_sek, timeout_min, schwellwert_cm)
         )
 
     def anwesenheit_stop(self):

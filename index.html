@@ -422,11 +422,11 @@
     <div class="automatik-felder">
       <div class="feld">
         <label for="sitzenMin">Sitzen (Min)</label>
-        <input type="number" id="sitzenMin" min="1" value="90">
+        <input type="number" id="sitzenMin" min="1" value="60">
       </div>
       <div class="feld">
         <label for="stehenMin">Stehen (Min)</label>
-        <input type="number" id="stehenMin" min="1" value="30">
+        <input type="number" id="stehenMin" min="1" value="15">
       </div>
       <div class="feld" style="grid-column: 1 / -1;">
         <label for="startPhase">Aktuelle Position</label>
@@ -454,9 +454,13 @@
     <div class="automatik-felder">
       <div class="feld">
         <label for="abfrageInput">Abfrage (Sek.)</label>
-        <input type="number" id="abfrageInput" min="1" value="3">
+        <input type="number" id="abfrageInput" min="1" value="1">
       </div>
       <div class="feld">
+        <label for="schwellwertInput">Änderung (cm)</label>
+        <input type="number" id="schwellwertInput" min="1" value="1">
+      </div>
+      <div class="feld" style="grid-column: 1 / -1;">
         <label for="timeoutInput">Timeout ohne Bewegung (Min.)</label>
         <input type="number" id="timeoutInput" min="1" value="10">
       </div>
@@ -615,8 +619,8 @@
   automatikToggle.addEventListener('change', async () => {
     try {
       if (automatikToggle.checked) {
-        const sitzen = sitzenInput.value || 90;
-        const stehen = stehenInput.value || 30;
+        const sitzen = sitzenInput.value || 60;
+        const stehen = stehenInput.value || 15;
         const phase = startPhaseSelect.value;
         const res = await fetch('/automatik/start?sitzen=' + sitzen + '&stehen=' + stehen + '&phase=' + phase);
         automatikAnzeigen(await res.json());
@@ -630,9 +634,11 @@
   });
 
   // --- Bewegungserkennung: fragt den Ultraschallsensor in einem eigenen Intervall ab.
-  // Bewegung (Distanzaenderung) schaltet die Automatik ein, laengerer Stillstand aus. ---
+  // Aendert sich die Distanz um mindestens den Schwellwert, gilt das als Bewegung und
+  // schaltet die Automatik ein; bleibt eine Aenderung laenger als der Timeout aus, schaltet sie ab. ---
   const anwesenheitToggle = document.getElementById('anwesenheitToggle');
   const abfrageInput = document.getElementById('abfrageInput');
+  const schwellwertInput = document.getElementById('schwellwertInput');
   const timeoutInput = document.getElementById('timeoutInput');
   const anwesenheitStatusEl = document.getElementById('anwesenheitStatus');
   const anwesenheitPhaseEl = document.getElementById('anwesenheitPhase');
@@ -645,22 +651,42 @@
   function anwesenheitAnzeigen(data) {
     anwesenheitToggle.checked = !!data.aktiv;
     abfrageInput.disabled = !!data.aktiv;
+    schwellwertInput.disabled = !!data.aktiv;
     timeoutInput.disabled = !!data.aktiv;
     anwesenheitStatusEl.classList.toggle('aktiv', !!data.aktiv);
     anwesenheitAktiv = !!data.aktiv;
 
     if (data.aktiv) {
       if (data.abfrage_sek) abfrageInput.value = data.abfrage_sek;
+      if (data.schwellwert_cm) schwellwertInput.value = data.schwellwert_cm;
       if (data.keine_aenderung_min) timeoutInput.value = data.keine_aenderung_min;
-      anwesenheitPhaseEl.textContent = (data.distanz_cm != null ? data.distanz_cm : '--') + ' cm';
-      anwesenheitRestSekunden = data.rest_sek;
-      anwesenheitDistanzEl.textContent = formatZeit(anwesenheitRestSekunden);
+      anwesenheitLiveAnzeigen(data);
       anwesenheitSubEl.textContent = 'bis Automatik-Stopp ohne Bewegung';
     } else {
       anwesenheitPhaseEl.textContent = 'Sensor';
       anwesenheitDistanzEl.textContent = '--:--';
       anwesenheitSubEl.textContent = 'ausgeschaltet';
     }
+  }
+
+  // Aktualisiert cm-Anzeige und Timer direkt aus der Server-Antwort (einzige
+  // Quelle, kein lokales Herunterzaehlen dazwischen) - laeuft jede Sekunde,
+  // damit der Timer bei erkannter Bewegung sofort auf den vollen
+  // Timeout-Wert zurueckspringt, statt erst bis zu 9s spaeter beim naechsten
+  // langsamen 10s-Sync (der Schalter/Eingabefelder aktualisiert). "erkannt"
+  // zeigt sichtbar an, wann genau ein Reset ausgeloest wird. distanz_cm ist
+  // immer der letzte GUELTIGE Messwert - bei "kein Echo" schickt der Pico
+  // weiterhin diesen letzten Wert statt null, die Anzeige haengt also nicht.
+  function anwesenheitLiveAnzeigen(data) {
+    if (data.distanz_cm == null) {
+      anwesenheitPhaseEl.textContent = '--';
+    } else if (data.anwesend) {
+      anwesenheitPhaseEl.textContent = data.distanz_cm + ' cm - erkannt';
+    } else {
+      anwesenheitPhaseEl.textContent = data.distanz_cm + ' cm';
+    }
+    anwesenheitRestSekunden = data.rest_sek;
+    anwesenheitDistanzEl.textContent = formatZeit(anwesenheitRestSekunden);
   }
 
   async function anwesenheitStatusAbrufen() {
@@ -673,12 +699,24 @@
     }
   }
 
+  async function anwesenheitDistanzAbrufen() {
+    if (!anwesenheitAktiv) return;
+    try {
+      const res = await fetch('/anwesenheit/status');
+      const data = await res.json();
+      anwesenheitLiveAnzeigen(data);
+    } catch (err) {
+      // wird in der naechsten Sekunde erneut versucht
+    }
+  }
+
   anwesenheitToggle.addEventListener('change', async () => {
     try {
       if (anwesenheitToggle.checked) {
-        const abfrage = abfrageInput.value || 3;
+        const abfrage = abfrageInput.value || 1;
+        const schwellwert = schwellwertInput.value || 1;
         const timeout = timeoutInput.value || 10;
-        const res = await fetch('/anwesenheit/start?abfrage=' + abfrage + '&timeout=' + timeout);
+        const res = await fetch('/anwesenheit/start?abfrage=' + abfrage + '&schwellwert=' + schwellwert + '&timeout=' + timeout);
         anwesenheitAnzeigen(await res.json());
       } else {
         const res = await fetch('/anwesenheit/stop');
@@ -852,10 +890,15 @@
   });
 
   // Seite holt sich den tatsaechlichen Stand alle 10s vom Pico (Info, Verlauf,
-  // Automatik- und Anwesenheits-Status) - das reicht fuer einen
-  // Mikrocontroller-Webserver voellig aus. Die angezeigten Zeiten (Laufzeit,
-  // Countdowns, "vor Xs" im Verlauf) laufen dazwischen lokal jede Sekunde
-  // weiter, damit sie nicht wie eingefroren wirken.
+  // Automatik- und Anwesenheits-Status inkl. Timer/Schalter/Eingabefelder) -
+  // das reicht fuer einen Mikrocontroller-Webserver voellig aus. Nur die
+  // cm-Anzeige (anwesenheitDistanzAbrufen) wird separat jede Sekunde
+  // abgefragt, damit sie live mitlaeuft wie der print() in Thonny (inkl.
+  // "kein Echo", das nicht ausgeblendet wird) - ohne den lokal weiterlaufenden
+  // Countdown oder die Eingabefelder anzufassen (das wuerde sie jede Sekunde
+  // zurueckspringen bzw. zittern lassen).
+  // Die angezeigten Zeiten (Laufzeit, Countdowns, "vor Xs" im Verlauf) laufen
+  // dazwischen lokal jede Sekunde weiter, damit sie nicht wie eingefroren wirken.
   function seiteAktualisieren() {
     infoAbrufen();
     verlaufAbrufen();
@@ -868,16 +911,17 @@
       automatikRestSekunden = Math.max(0, automatikRestSekunden - 1);
       automatikTimerEl.textContent = formatZeit(automatikRestSekunden);
     }
-    if (anwesenheitAktiv) {
-      anwesenheitRestSekunden = Math.max(0, anwesenheitRestSekunden - 1);
-      anwesenheitDistanzEl.textContent = formatZeit(anwesenheitRestSekunden);
-    }
+    // Der Anwesenheits-Timer zaehlt nicht mehr lokal mit - er wird jede
+    // Sekunde per anwesenheitDistanzAbrufen() direkt vom Server uebernommen,
+    // damit er bei erkannter Anwesenheit sofort auf den vollen
+    // Timeout-Wert zurueckspringt.
     infoZeileRendern();
     verlaufRendern();
   }
 
   seiteAktualisieren();
   setInterval(seiteAktualisieren, 10000);
+  setInterval(anwesenheitDistanzAbrufen, 1000);
   setInterval(sekundenTick, 1000);
 </script>
 </body>

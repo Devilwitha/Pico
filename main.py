@@ -4,9 +4,10 @@ Pico W Steuerung - WLAN Webserver mit 4 Tasten (Auf / Ab / Stehen / Sitzen)
 Verbindet sich mit einem bestehenden WLAN und startet einen Webserver mit
 moderner Oberflaeche. Ueber vier Buttons koennen GPIO-Ausgaenge angesteuert
 werden (z.B. fuer Relais, Motorsteuerung o.ae.). Enthaelt ausserdem eine
-Automatik (zeitgesteuerter Wechsel Sitzen/Stehen), eine Anwesenheitserkennung
-per Grove Ultrasonic Ranger (aktiviert die Automatik automatisch, sobald ein
-Objekt naeher als ein im Web einstellbarer Schwellwert ist) und eine
+Automatik (zeitgesteuerter Wechsel Sitzen/Stehen), eine Bewegungserkennung
+per Grove Ultrasonic Ranger (aktiviert die Automatik automatisch, sobald sich
+die gemessene Distanz um mehr als einen im Web einstellbaren Schwellwert
+aendert - "kein Echo" zaehlt dabei nicht als Aenderung) und eine
 WLAN-Update-Funktion: im Browser eine neue Version dieser Datei hochladen,
 der Pico prueft sie auf gueltiges Python, ersetzt main.py und startet neu.
 
@@ -220,8 +221,8 @@ def aktion_stop(name):
 # ---------------------------------------------------------------------------
 
 automatik_aktiv = False
-automatik_sitzen_sek = 90 * 60
-automatik_stehen_sek = 30 * 60
+automatik_sitzen_sek = 60 * 60
+automatik_stehen_sek = 15 * 60
 automatik_phase = "sitzen"
 automatik_phase_start = 0
 
@@ -277,22 +278,26 @@ def automatik_tick():
 # ---------------------------------------------------------------------------
 # Bewegungserkennung: fragt per Grove Ultrasonic Ranger in einem eigenen,
 # von der Automatik-Pruefung entkoppelten Intervall die Distanz ab. Aendert
-# sich die Distanz (Bewegung), wird die Automatik eingeschaltet. Bleibt sie
-# laenger als der Timeout unveraendert, wird die Automatik ausgeschaltet.
-# Beide Zeiten sind im Web einstellbar.
+# sich die Distanz um mindestens den (im Web einstellbaren) Schwellwert
+# gegenueber dem letzten Referenzwert, gilt das als Bewegung/Anwesenheit -
+# die Automatik wird eingeschaltet und der Abschalt-Timer auf den vollen
+# Timeout-Wert zurueckgesetzt. "Kein Echo" (Sensor-Timeout) zaehlt dabei
+# ausdruecklich NICHT als Aenderung und ueberschreibt weder den Referenzwert
+# noch den zuletzt angezeigten Messwert - im Web bleibt bei einem
+# Aussetzer einfach der letzte gueltige cm-Wert stehen. Bleibt eine echte
+# Aenderung laenger als der Timeout aus, wird die Automatik ausgeschaltet.
 # ---------------------------------------------------------------------------
 
-# Ab wie viel cm Unterschied zur letzten Referenzmessung eine "Aenderung"
-# (Bewegung) zaehlt - Toleranz gegen normales Sensor-Rauschen
-ANWESENHEIT_AENDERUNG_TOLERANZ_CM = 3
-
 anwesenheit_aktiv = True
-anwesenheit_abfrage_sek = 3          # wie oft der Sensor abgefragt wird
+anwesenheit_abfrage_sek = 1          # wie oft der Sensor abgefragt wird
 anwesenheit_keine_aenderung_sek = 10 * 60  # Timeout bis zum Abschalten
-anwesenheit_letzte_distanz_cm = None
+anwesenheit_schwellwert_cm = 1       # ab dieser Aenderung (cm) gegenueber dem Referenzwert gilt das als Bewegung
+anwesenheit_letzte_distanz_cm = None  # letzter GUELTIGER Messwert - bleibt bei "kein Echo" erhalten
+anwesenheit_anwesend = False
 
-# Referenzwert, Zeitpunkt der letzten Aenderung und Zeitpunkt der letzten
-# Messung (fuer das vom 1-Sekunden-Haupttick entkoppelte Abfrage-Intervall)
+# Referenzwert, Zeitpunkt der letzten erkannten Aenderung und Zeitpunkt der
+# letzten Messung (fuer das vom 1-Sekunden-Haupttick entkoppelte
+# Abfrage-Intervall)
 anwesenheit_referenz_distanz_cm = None
 anwesenheit_letzte_aenderung_zeit = BOOT_ZEIT
 anwesenheit_letzte_messung_zeit = 0
@@ -317,15 +322,16 @@ def distanz_messen_cm(sig_pin=PIN_SIG_ULTRASCHALL, timeout_us=30_000):
     return int(dauer_us / 58)  # Laufzeit -> Zentimeter, ganze Zahl (.x wird ignoriert)
 
 
-def anwesenheit_einstellen(aktiv, abfrage_sek, keine_aenderung_min):
+def anwesenheit_einstellen(aktiv, abfrage_sek, keine_aenderung_min, schwellwert_cm):
     global anwesenheit_aktiv, anwesenheit_abfrage_sek, anwesenheit_keine_aenderung_sek
-    global anwesenheit_referenz_distanz_cm, anwesenheit_letzte_aenderung_zeit
-    global anwesenheit_letzte_messung_zeit
+    global anwesenheit_schwellwert_cm, anwesenheit_referenz_distanz_cm
+    global anwesenheit_letzte_aenderung_zeit, anwesenheit_letzte_messung_zeit
 
     anwesenheit_abfrage_sek = max(1, float(abfrage_sek))
     anwesenheit_keine_aenderung_sek = max(60, float(keine_aenderung_min) * 60)
+    anwesenheit_schwellwert_cm = max(1, float(schwellwert_cm))
     anwesenheit_aktiv = bool(aktiv)
-    anwesenheit_referenz_distanz_cm = None
+    anwesenheit_referenz_distanz_cm = None  # naechste gueltige Messung setzt neuen Referenzwert
     anwesenheit_letzte_aenderung_zeit = time.time()
     anwesenheit_letzte_messung_zeit = 0  # naechster Tick misst sofort
     return True
@@ -337,7 +343,9 @@ def anwesenheit_status():
         "aktiv": anwesenheit_aktiv,
         "abfrage_sek": anwesenheit_abfrage_sek,
         "keine_aenderung_min": anwesenheit_keine_aenderung_sek / 60,
+        "schwellwert_cm": anwesenheit_schwellwert_cm,
         "distanz_cm": anwesenheit_letzte_distanz_cm,
+        "anwesend": anwesenheit_anwesend,
         "rest_sek": max(0, int(rest_sek)) if anwesenheit_aktiv else 0,
     }
 
@@ -345,10 +353,16 @@ def anwesenheit_status():
 def anwesenheit_tick():
     """Wird jede Sekunde aufgerufen, misst aber nur alle
     anwesenheit_abfrage_sek Sekunden tatsaechlich (entkoppeltes Intervall).
-    Bewegung (Distanzaenderung) schaltet die Automatik ein, laengerer
-    Stillstand (Timeout) schaltet sie wieder aus."""
+    Aendert sich die Distanz um mindestens den Schwellwert gegenueber dem
+    Referenzwert, gilt das als Bewegung: die Automatik wird eingeschaltet
+    und der Abschalt-Timer auf den vollen Timeout-Wert zurueckgesetzt.
+    "Kein Echo" wird nur geloggt, zaehlt aber nicht als Aenderung und
+    ueberschreibt weder Referenzwert noch letzten gueltigen Messwert.
+    Bleibt eine echte Aenderung laenger als der Timeout aus, wird die
+    Automatik wieder ausgeschaltet."""
     global anwesenheit_letzte_distanz_cm, anwesenheit_letzte_messung_zeit
     global anwesenheit_referenz_distanz_cm, anwesenheit_letzte_aenderung_zeit
+    global anwesenheit_anwesend
 
     if not anwesenheit_aktiv:
         return
@@ -359,21 +373,23 @@ def anwesenheit_tick():
     anwesenheit_letzte_messung_zeit = jetzt
 
     distanz = distanz_messen_cm()
-    anwesenheit_letzte_distanz_cm = distanz
     print("Ultraschall:", "{} cm".format(distanz) if distanz is not None else "kein Echo")
 
     if distanz is None:
-        return  # kein Echo liefert keinen verwertbaren Vergleichswert
+        return  # kein Echo zaehlt nicht als Aenderung - letzter gueltiger Wert bleibt stehen
+
+    anwesenheit_letzte_distanz_cm = distanz
 
     aenderung_erkannt = (
         anwesenheit_referenz_distanz_cm is not None
-        and abs(distanz - anwesenheit_referenz_distanz_cm) > ANWESENHEIT_AENDERUNG_TOLERANZ_CM
+        and abs(distanz - anwesenheit_referenz_distanz_cm) >= anwesenheit_schwellwert_cm
     )
+    anwesenheit_anwesend = aenderung_erkannt
 
     if anwesenheit_referenz_distanz_cm is None or aenderung_erkannt:
         anwesenheit_referenz_distanz_cm = distanz
         anwesenheit_letzte_aenderung_zeit = jetzt
-        if aenderung_erkannt and not automatik_aktiv:
+        if not automatik_aktiv:
             automatik_einschalten(automatik_sitzen_sek / 60, automatik_stehen_sek / 60, "sitzen")
             verlauf_eintragen("automatik_ein", "sensor")
             print("Bewegung erkannt - Automatik automatisch gestartet")
@@ -578,8 +594,8 @@ def anfrage_bearbeiten(client):
             parameter = query_parsen(pfad)
             try:
                 automatik_einschalten(
-                    parameter.get("sitzen", "90"),
-                    parameter.get("stehen", "30"),
+                    parameter.get("sitzen", "60"),
+                    parameter.get("stehen", "15"),
                     parameter.get("phase", "sitzen"),
                 )
                 http_antwort(client, "200 OK", json.dumps(automatik_status()), "application/json")
@@ -595,14 +611,20 @@ def anfrage_bearbeiten(client):
             try:
                 anwesenheit_einstellen(
                     True,
-                    parameter.get("abfrage", "3"),
+                    parameter.get("abfrage", "1"),
                     parameter.get("timeout", "10"),
+                    parameter.get("schwellwert", "1"),
                 )
                 http_antwort(client, "200 OK", json.dumps(anwesenheit_status()), "application/json")
             except (ValueError, TypeError):
                 http_antwort(client, "400 Bad Request", json.dumps({"aktiv": False}), "application/json")
         elif pfad.startswith("/anwesenheit/stop"):
-            anwesenheit_einstellen(False, anwesenheit_abfrage_sek, anwesenheit_keine_aenderung_sek / 60)
+            anwesenheit_einstellen(
+                False,
+                anwesenheit_abfrage_sek,
+                anwesenheit_keine_aenderung_sek / 60,
+                anwesenheit_schwellwert_cm,
+            )
             http_antwort(client, "200 OK", json.dumps(anwesenheit_status()), "application/json")
         elif pfad.startswith("/anwesenheit/status"):
             http_antwort(client, "200 OK", json.dumps(anwesenheit_status()), "application/json")
