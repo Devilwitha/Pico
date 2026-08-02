@@ -6,10 +6,17 @@ Empfaengt CPU-, RAM- und GPU-Auslastung sowie die GPU-Temperatur per UDP
 mit Text und farbigen Fortschrittsbalken dar.
 
 Voraussetzung: Das Display der T-Display-S3 haengt am 8-Bit-Parallelbus
-(i80) und nicht an SPI. Dafuer wird eine MicroPython-Firmware benoetigt,
-die den "s3lcd"-Treiber enthaelt (https://github.com/russhughes/s3lcd).
-Zusaetzlich muessen die Font-Dateien "vga1_8x8.py" und "vga2_16x32.py"
-aus diesem Projekt auf das Geraet kopiert werden.
+(i80) und nicht an SPI. Dafuer wird eine MicroPython-Firmware mit dem
+"s3lcd"-Treiber benoetigt (https://github.com/russhughes/s3lcd) - Standard-
+MicroPython-Firmware kennt dieses Modul nicht ("ImportError: no module
+named 's3lcd'"). Passend fuer die T-Display-S3 (Octal-SPIRAM, 16MB Flash)
+ist die vorkompilierte Firmware "firmware/GENERIC_S3_OCT_16M/firmware.bin"
+aus diesem Repository. tft_config.py (liegt in diesem Ordner) muss
+zusammen mit main.py auf das Geraet kopiert werden - die Bus-/Panel-Pins
+(inkl. Power-Enable an Pin 15 und Hintergrundbeleuchtung an Pin 38) sind
+dort bereits korrekt fuer dieses Board hinterlegt. Die verwendeten Fonts
+(vga1_8x8, vga2_bold_16x32) sind in der Firmware bereits enthalten und
+muessen nicht separat hochgeladen werden.
 """
 
 try:
@@ -22,84 +29,40 @@ import time
 
 import network
 import s3lcd
-from machine import Pin
+import tft_config
 
 import vga1_8x8 as small_font
-import vga2_16x32 as big_font
+import vga2_bold_16x32 as big_font
 
 # --------------------------------------------------------------------------
 # Konfiguration
 # --------------------------------------------------------------------------
-WIFI_SSID = "DEIN_WLAN_NAME"
-WIFI_PASSWORD = "DEIN_WLAN_PASSWORT"
+WIFI_SSID = "FRITZ!Box 5530 BA_2GEXT"
+WIFI_PASSWORD = "1234567890"
 
 UDP_PORT = 5005
 
-WIDTH = 320
-HEIGHT = 170
-
-BL_PIN = 15
-
-# 8-Bit-Parallelbus-Pins der T-Display-S3
-LCD_D0 = 39
-LCD_D1 = 40
-LCD_D2 = 41
-LCD_D3 = 42
-LCD_D4 = 45
-LCD_D5 = 46
-LCD_D6 = 47
-LCD_D7 = 48
-LCD_WR = 8
-LCD_DC = 7
-LCD_CS = 6
-LCD_RST = 5
-
 # --------------------------------------------------------------------------
-# Hintergrundbeleuchtung einschalten
+# Display initialisieren (Querformat 320x170, siehe tft_config.py)
 # --------------------------------------------------------------------------
-backlight = Pin(BL_PIN, Pin.OUT)
-backlight.value(1)
-
-# --------------------------------------------------------------------------
-# Display ueber den 8-Bit-Parallelbus initialisieren
-# --------------------------------------------------------------------------
-bus = s3lcd.Bus(
-    dc=LCD_DC,
-    wr=LCD_WR,
-    freq=20000000,
-    cs=LCD_CS,
-    d0=LCD_D0,
-    d1=LCD_D1,
-    d2=LCD_D2,
-    d3=LCD_D3,
-    d4=LCD_D4,
-    d5=LCD_D5,
-    d6=LCD_D6,
-    d7=LCD_D7,
-)
-
-tft = s3lcd.ST7789(
-    bus,
-    HEIGHT,
-    WIDTH,
-    reset=LCD_RST,
-    rotation=1,
-    color_order=s3lcd.BGR,
-)
+tft = tft_config.config(tft_config.WIDE)
 tft.init()
-tft.fill(0)
+
+WIDTH = tft.width()
+HEIGHT = tft.height()
 
 # --------------------------------------------------------------------------
-# Farben (RGB565)
+# Farben (RGB565) - BLACK/WHITE/RED/GREEN/CYAN/YELLOW liefert s3lcd direkt,
+# GRAY und ORANGE gibt es dort nicht und werden selbst gemischt.
 # --------------------------------------------------------------------------
-BLACK = s3lcd.color565(0, 0, 0)
-WHITE = s3lcd.color565(255, 255, 255)
+BLACK = s3lcd.BLACK
+WHITE = s3lcd.WHITE
+RED = s3lcd.RED
+GREEN = s3lcd.GREEN
+CYAN = s3lcd.CYAN
+YELLOW = s3lcd.YELLOW
 GRAY = s3lcd.color565(60, 60, 60)
-GREEN = s3lcd.color565(0, 200, 0)
-YELLOW = s3lcd.color565(230, 200, 0)
 ORANGE = s3lcd.color565(240, 120, 0)
-RED = s3lcd.color565(220, 0, 0)
-CYAN = s3lcd.color565(0, 200, 220)
 
 # --------------------------------------------------------------------------
 # Layout der Dashboard-Zeilen
@@ -143,6 +106,7 @@ def draw_boot_screen(status_line, ip_line):
     tft.text(big_font, "PC MONITOR", 40, 30, CYAN, BLACK)
     tft.text(small_font, status_line, 10, 90, WHITE, BLACK)
     tft.text(small_font, ip_line, 10, 110, WHITE, BLACK)
+    tft.show()
 
 
 def connect_wifi():
@@ -171,6 +135,7 @@ def connect_wifi():
 def draw_dashboard_static():
     tft.fill(BLACK)
     tft.text(small_font, "PC MONITOR - UDP 5005", MARGIN, 4, CYAN, BLACK)
+    tft.show()
 
 
 def draw_metric(row_index, value):
@@ -211,6 +176,7 @@ def main():
     values = {"cpu": 0, "ram": 0, "gpu": 0, "gpu_temp": 0}
     for index in range(len(ROWS)):
         draw_metric(index, values[ROWS[index]["key"]])
+    tft.show()
 
     udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp.bind(("0.0.0.0", UDP_PORT))
@@ -218,7 +184,7 @@ def main():
 
     while True:
         try:
-            data, addr = udp.recvfrom(512)
+            data, _addr = udp.recvfrom(512)
         except OSError:
             continue
 
@@ -227,6 +193,7 @@ def main():
         except ValueError:
             continue
 
+        geaendert = False
         for index, row in enumerate(ROWS):
             key = row["key"]
             if key in payload:
@@ -234,6 +201,10 @@ def main():
                 if new_value != values[key]:
                     values[key] = new_value
                     draw_metric(index, new_value)
+                    geaendert = True
+
+        if geaendert:
+            tft.show()
 
 
 if __name__ == "__main__":

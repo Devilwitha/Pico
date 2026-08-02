@@ -24,7 +24,7 @@ except ImportError:
 # --------------------------------------------------------------------------
 # Konfiguration
 # --------------------------------------------------------------------------
-TARGET_IP = "192.168.1.100"      # IP-Adresse des LilyGO T-Display-S3
+TARGET_IP = "192.168.178.81"      # IP-Adresse des LilyGO T-Display-S3
 TARGET_PORT = 5005
 SEND_INTERVAL = 1.0              # Sekunden zwischen zwei Sendungen
 
@@ -58,21 +58,31 @@ def main():
 
     try:
         while True:
-            cpu_percent = psutil.cpu_percent(interval=None)
-            ram_percent = psutil.virtual_memory().percent
-            gpu_percent, gpu_temp = get_gpu_stats()
+            # Nach Standby/Sperrbildschirm braucht das Netzwerk kurz, bis es
+            # wieder erreichbar ist (WLAN-Reconnect) - ein einzelner
+            # fehlgeschlagener Versuch soll das Programm nicht beenden,
+            # sondern beim naechsten Intervall einfach erneut versucht werden.
+            try:
+                cpu_percent = psutil.cpu_percent(interval=None)
+                ram_percent = psutil.virtual_memory().percent
+                gpu_percent, gpu_temp = get_gpu_stats()
 
-            payload = {
-                "cpu": round(cpu_percent, 1),
-                "ram": round(ram_percent, 1),
-                "gpu": gpu_percent,
-                "gpu_temp": gpu_temp,
-            }
+                payload = {
+                    "cpu": round(cpu_percent, 1),
+                    "ram": round(ram_percent, 1),
+                    "gpu": gpu_percent,
+                    "gpu_temp": gpu_temp,
+                }
 
-            message = json.dumps(payload).encode("utf-8")
-            sock.sendto(message, target_address)
+                message = json.dumps(payload).encode("utf-8")
+                sock.sendto(message, target_address)
 
-            print(payload)
+                print(payload)
+            except OSError as exc:
+                print("Netzwerkfehler (z.B. nach Standby), versuche es weiter:", exc)
+            except Exception as exc:
+                print("Unerwarteter Fehler, versuche es weiter:", exc)
+
             time.sleep(SEND_INTERVAL)
     except KeyboardInterrupt:
         print("Beendet durch Benutzer.")
