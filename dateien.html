@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pico Dateien</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg-1: #0b1120;
+    --accent: #38bdf8;
+    --accent-2: #a855f7;
+    --gruen: #4ade80;
+    --rot: #f87171;
+    --card: rgba(255,255,255,0.06);
+    --card-border: rgba(255,255,255,0.12);
+    --text: #e2e8f0;
+    --text-dim: #94a3b8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    color: var(--text);
+    padding: 24px;
+    background: var(--bg-1);
+  }
+  .karte {
+    width: 100%;
+    max-width: 420px;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    backdrop-filter: blur(20px);
+    border-radius: 26px;
+    padding: 30px 26px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.45);
+  }
+  h1 {
+    margin: 0 0 4px;
+    font-size: 21px;
+    text-align: center;
+  }
+  .nav-zeile {
+    text-align: center;
+    font-size: 12.5px;
+    margin-bottom: 20px;
+  }
+  .nav-zeile a {
+    color: var(--text-dim);
+    text-decoration: none;
+  }
+  .nav-zeile a:hover { color: var(--text); }
+  .nav-zeile .trennpunkt { margin: 0 6px; color: var(--text-dim); }
+  .werkzeuge {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+  .werkzeuge input {
+    flex: 1;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 10px 12px;
+    color: var(--text);
+    font-size: 13.5px;
+  }
+  .neu-btn {
+    appearance: none;
+    flex-shrink: 0;
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    background: linear-gradient(160deg, rgba(56,189,248,0.28), rgba(168,85,247,0.20));
+    cursor: pointer;
+  }
+  .neu-btn:active { transform: scale(0.97); }
+  .datei-liste {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 340px;
+    overflow-y: auto;
+  }
+  .datei-zeile {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 4px;
+    border-bottom: 1px solid var(--card-border);
+  }
+  .datei-zeile:last-child { border-bottom: none; }
+  .datei-info { flex: 1; min-width: 0; }
+  .datei-name {
+    font-size: 13.5px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .datei-groesse {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 2px;
+  }
+  .datei-aktion {
+    appearance: none;
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    border: 1px solid var(--card-border);
+    border-radius: 9px;
+    background: rgba(255,255,255,0.04);
+    color: var(--text);
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .datei-aktion:hover { border-color: var(--accent); }
+  .datei-aktion.loeschen:hover { border-color: var(--rot); color: var(--rot); }
+  .datei-aktion:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+  .datei-aktion:disabled:hover { border-color: var(--card-border); color: var(--text); }
+  .leer {
+    text-align: center;
+    font-size: 12.5px;
+    color: var(--text-dim);
+    padding: 20px 0;
+  }
+  .feld { margin-bottom: 14px; }
+  .feld label {
+    display: block;
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+  }
+  .feld input {
+    width: 100%;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 12px;
+    color: var(--text);
+    font-size: 14px;
+  }
+  .feld input:disabled { opacity: 0.6; }
+  .editor-inhalt {
+    width: 100%;
+    min-height: 280px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 12px;
+    color: var(--text);
+    font-family: "Consolas", "SFMono-Regular", Menlo, monospace;
+    font-size: 12.5px;
+    line-height: 1.5;
+    resize: vertical;
+  }
+  .editor-aktionen {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-top: 14px;
+  }
+  button.speichern-btn, button.abbrechen-btn {
+    appearance: none;
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    padding: 12px;
+    font-size: 13.5px;
+    font-weight: 600;
+    cursor: pointer;
+    color: var(--text);
+  }
+  button.speichern-btn {
+    background: linear-gradient(160deg, rgba(56,189,248,0.28), rgba(168,85,247,0.20));
+  }
+  button.abbrechen-btn {
+    background: rgba(255,255,255,0.05);
+  }
+  button.speichern-btn:disabled, button.abbrechen-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  button:active:not(:disabled) { transform: scale(0.98); }
+  .status {
+    text-align: center;
+    font-size: 12.5px;
+    color: var(--text-dim);
+    margin-top: 12px;
+    min-height: 18px;
+    line-height: 1.5;
+  }
+  .status.ok { color: var(--gruen); }
+  .status.fehler { color: var(--rot); }
+</style>
+</head>
+<body>
+  <div class="karte">
+    <h1>Dateien</h1>
+    <div class="nav-zeile">
+      <a href="/index.html">&larr; Zur Steuerung</a><span class="trennpunkt">&middot;</span><a href="/einstellungen.html">Einstellungen</a>
+    </div>
+
+    <div id="ansichtListe">
+      <div class="werkzeuge">
+        <input type="text" id="sucheInput" placeholder="Datei suchen...">
+        <button type="button" class="neu-btn" id="neuButton">+ Neu</button>
+      </div>
+      <ul class="datei-liste" id="dateiListe">
+        <li class="leer">Lade Dateien...</li>
+      </ul>
+      <div class="status" id="listeStatus"></div>
+    </div>
+
+    <div id="ansichtEditor" style="display: none;">
+      <div class="feld">
+        <label for="dateinameInput">Dateiname</label>
+        <input type="text" id="dateinameInput" autocomplete="off">
+      </div>
+      <textarea class="editor-inhalt" id="inhaltFeld" spellcheck="false"></textarea>
+      <div class="editor-aktionen">
+        <button type="button" class="speichern-btn" id="speichernButton">Speichern</button>
+        <button type="button" class="abbrechen-btn" id="abbrechenButton">Abbrechen</button>
+      </div>
+      <div class="status" id="editorStatus"></div>
+    </div>
+  </div>
+
+<script>
+  const GESCHUETZTE_DATEIEN = ['main.py', 'boot.py'];
+
+  const ansichtListe = document.getElementById('ansichtListe');
+  const ansichtEditor = document.getElementById('ansichtEditor');
+  const sucheInput = document.getElementById('sucheInput');
+  const neuButton = document.getElementById('neuButton');
+  const dateiListe = document.getElementById('dateiListe');
+  const listeStatus = document.getElementById('listeStatus');
+  const dateinameInput = document.getElementById('dateinameInput');
+  const inhaltFeld = document.getElementById('inhaltFeld');
+  const speichernButton = document.getElementById('speichernButton');
+  const abbrechenButton = document.getElementById('abbrechenButton');
+  const editorStatus = document.getElementById('editorStatus');
+
+  let dateien = [];
+  let bearbeiteteDatei = null; // null = neue Datei wird angelegt
+
+  function zeigeStatus(el, text, art) {
+    el.className = art ? ('status ' + art) : 'status';
+    el.textContent = text;
+  }
+
+  function formatGroesse(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    return (bytes / 1024).toFixed(1) + ' KB';
+  }
+
+  function dateiListeRendern() {
+    const filter = sucheInput.value.trim().toLowerCase();
+    const gefiltert = dateien.filter(d => d.name.toLowerCase().includes(filter));
+
+    if (!gefiltert.length) {
+      dateiListe.innerHTML = '<li class="leer">' + (dateien.length ? 'Keine Treffer' : 'Keine Dateien gefunden') + '</li>';
+      return;
+    }
+
+    dateiListe.innerHTML = gefiltert.map(d => {
+      const geschuetzt = GESCHUETZTE_DATEIEN.includes(d.name);
+      return '<li class="datei-zeile">' +
+        '<div class="datei-info">' +
+          '<div class="datei-name">' + d.name + '</div>' +
+          '<div class="datei-groesse">' + formatGroesse(d.groesse) + '</div>' +
+        '</div>' +
+        '<button type="button" class="datei-aktion" data-bearbeiten="' + d.name + '" title="Bearbeiten">&#9998;</button>' +
+        '<button type="button" class="datei-aktion loeschen" data-loeschen="' + d.name + '" title="Loeschen"' +
+          (geschuetzt ? ' disabled' : '') + '>&#128465;</button>' +
+      '</li>';
+    }).join('');
+  }
+
+  async function dateienLaden() {
+    zeigeStatus(listeStatus, 'Lade...');
+    try {
+      const res = await fetch('/dateien/liste');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      dateien = await res.json();
+      dateiListeRendern();
+      zeigeStatus(listeStatus, '');
+    } catch (err) {
+      dateiListe.innerHTML = '<li class="leer">Fehler beim Laden</li>';
+      zeigeStatus(listeStatus, 'Verbindungsfehler', 'fehler');
+    }
+  }
+
+  function editorAnzeigen(name, inhalt) {
+    bearbeiteteDatei = name;
+    dateinameInput.value = name || '';
+    dateinameInput.disabled = !!name;
+    inhaltFeld.value = inhalt || '';
+    zeigeStatus(editorStatus, '');
+    speichernButton.disabled = false;
+    abbrechenButton.disabled = false;
+    ansichtListe.style.display = 'none';
+    ansichtEditor.style.display = 'block';
+    (name ? inhaltFeld : dateinameInput).focus();
+  }
+
+  function editorSchliessen() {
+    ansichtEditor.style.display = 'none';
+    ansichtListe.style.display = 'block';
+    bearbeiteteDatei = null;
+    dateinameInput.disabled = false;
+  }
+
+  neuButton.addEventListener('click', () => {
+    editorAnzeigen(null, '');
+  });
+
+  abbrechenButton.addEventListener('click', () => {
+    editorSchliessen();
+  });
+
+  dateiListe.addEventListener('click', async (ev) => {
+    const bearbeitenName = ev.target.dataset.bearbeiten;
+    const loeschenName = ev.target.dataset.loeschen;
+
+    if (bearbeitenName) {
+      zeigeStatus(listeStatus, 'Lade "' + bearbeitenName + '"...');
+      try {
+        const res = await fetch('/dateien/lesen?name=' + encodeURIComponent(bearbeitenName));
+        if (!res.ok) {
+          const fehler = await res.json().catch(() => ({}));
+          throw new Error(fehler.fehler || ('HTTP ' + res.status));
+        }
+        const inhalt = await res.text();
+        zeigeStatus(listeStatus, '');
+        editorAnzeigen(bearbeitenName, inhalt);
+      } catch (err) {
+        zeigeStatus(listeStatus, 'Fehler: ' + err.message, 'fehler');
+      }
+    } else if (loeschenName) {
+      if (!confirm('"' + loeschenName + '" wirklich loeschen?')) return;
+      zeigeStatus(listeStatus, 'Loesche...');
+      try {
+        const res = await fetch('/dateien/loeschen?name=' + encodeURIComponent(loeschenName));
+        const data = await res.json();
+        if (data.ok) {
+          zeigeStatus(listeStatus, '"' + loeschenName + '" geloescht', 'ok');
+          dateienLaden();
+        } else {
+          zeigeStatus(listeStatus, 'Fehler: ' + (data.fehler || 'unbekannt'), 'fehler');
+        }
+      } catch (err) {
+        zeigeStatus(listeStatus, 'Verbindungsfehler', 'fehler');
+      }
+    }
+  });
+
+  speichernButton.addEventListener('click', async () => {
+    const name = (bearbeiteteDatei || dateinameInput.value.trim());
+    if (!name) {
+      zeigeStatus(editorStatus, 'Bitte einen Dateinamen eingeben', 'fehler');
+      return;
+    }
+    if (!inhaltFeld.value.trim()) {
+      zeigeStatus(editorStatus, 'Datei darf nicht leer sein', 'fehler');
+      return;
+    }
+    const istPython = name.toLowerCase().endsWith('.py');
+    if (!confirm('"' + name + '" speichern' + (istPython ? ' und Pico danach neu starten?' : '?'))) return;
+
+    speichernButton.disabled = true;
+    abbrechenButton.disabled = true;
+    zeigeStatus(editorStatus, 'Speichere...');
+    try {
+      const res = await fetch('/update?ziel=' + encodeURIComponent(name), {
+        method: 'POST',
+        body: inhaltFeld.value,
+      });
+      const data = await res.json();
+      if (data.ok && data.neustart) {
+        zeigeStatus(editorStatus, 'Gespeichert - Pico startet neu.', 'ok');
+        setTimeout(() => { editorSchliessen(); dateienLaden(); }, 2000);
+      } else if (data.ok) {
+        zeigeStatus(editorStatus, 'Gespeichert.', 'ok');
+        setTimeout(() => { editorSchliessen(); dateienLaden(); }, 800);
+      } else {
+        zeigeStatus(editorStatus, 'Fehler: ' + (data.fehler || 'unbekannt'), 'fehler');
+        speichernButton.disabled = false;
+        abbrechenButton.disabled = false;
+      }
+    } catch (err) {
+      zeigeStatus(editorStatus, 'Verbindung getrennt - falls gespeichert wurde, startet der Pico ggf. gerade neu.', 'fehler');
+      speichernButton.disabled = false;
+      abbrechenButton.disabled = false;
+    }
+  });
+
+  sucheInput.addEventListener('input', dateiListeRendern);
+
+  dateienLaden();
+</script>
+</body>
+</html>

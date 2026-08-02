@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pico Einstellungen</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg-1: #0b1120;
+    --accent: #38bdf8;
+    --accent-2: #a855f7;
+    --gruen: #4ade80;
+    --rot: #f87171;
+    --card: rgba(255,255,255,0.06);
+    --card-border: rgba(255,255,255,0.12);
+    --text: #e2e8f0;
+    --text-dim: #94a3b8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    color: var(--text);
+    padding: 24px;
+    background: var(--bg-1);
+  }
+  .karte {
+    width: 100%;
+    max-width: 420px;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    backdrop-filter: blur(20px);
+    border-radius: 26px;
+    padding: 30px 26px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.45);
+  }
+  h1 {
+    margin: 0 0 4px;
+    font-size: 21px;
+    text-align: center;
+  }
+  .nav-zeile {
+    text-align: center;
+    font-size: 12.5px;
+    margin-bottom: 18px;
+  }
+  .nav-zeile a {
+    color: var(--text-dim);
+    text-decoration: none;
+  }
+  .nav-zeile a:hover { color: var(--text); }
+  .nav-zeile .trennpunkt { margin: 0 6px; color: var(--text-dim); }
+  .hinweis {
+    border-radius: 14px;
+    padding: 14px;
+    font-size: 13px;
+    line-height: 1.5;
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .hinweis.hotspot {
+    background: linear-gradient(160deg, rgba(248,113,113,0.16), rgba(168,85,247,0.10));
+    border: 1px solid rgba(248,113,113,0.35);
+  }
+  .hinweis.normal {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--card-border);
+    color: var(--text-dim);
+  }
+  .feld { margin-bottom: 16px; }
+  .feld label {
+    display: block;
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+  }
+  .feld input {
+    width: 100%;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 12px;
+    color: var(--text);
+    font-size: 14px;
+  }
+  button {
+    appearance: none;
+    width: 100%;
+    border: 1px solid var(--card-border);
+    border-radius: 14px;
+    padding: 14px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+    background: linear-gradient(160deg, rgba(56,189,248,0.28), rgba(168,85,247,0.20));
+    cursor: pointer;
+    transition: transform 0.12s ease, opacity 0.15s ease;
+  }
+  button:active { transform: scale(0.98); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .status {
+    text-align: center;
+    font-size: 12.5px;
+    color: var(--text-dim);
+    margin-top: 14px;
+    min-height: 18px;
+    line-height: 1.5;
+  }
+  .status.ok { color: var(--gruen); }
+  .status.fehler { color: var(--rot); }
+  .info-zeile {
+    text-align: center;
+    font-size: 11.5px;
+    color: var(--text-dim);
+    margin-top: 18px;
+  }
+</style>
+</head>
+<body>
+  <div class="karte">
+    <h1>WLAN-Einstellungen</h1>
+    <div class="nav-zeile" id="navZeile">
+      <a href="/index.html">&larr; Zur Steuerung</a><span class="trennpunkt">&middot;</span><a href="/dateien.html">Dateien</a>
+    </div>
+    <div class="hinweis" id="hinweis">Lade Status...</div>
+
+    <form id="wlanForm">
+      <div class="feld">
+        <label for="ssidInput">WLAN-Name (SSID)</label>
+        <input type="text" id="ssidInput" autocomplete="off" required>
+      </div>
+      <div class="feld">
+        <label for="passwortInput">WLAN-Passwort</label>
+        <input type="password" id="passwortInput" autocomplete="off">
+      </div>
+      <button type="submit" id="speichernButton">Speichern &amp; neu starten</button>
+    </form>
+    <div class="status" id="status"></div>
+    <div class="info-zeile" id="infoZeile"></div>
+  </div>
+
+<script>
+  const hinweisEl = document.getElementById('hinweis');
+  const navZeile = document.getElementById('navZeile');
+  const form = document.getElementById('wlanForm');
+  const ssidInput = document.getElementById('ssidInput');
+  const passwortInput = document.getElementById('passwortInput');
+  const speichernButton = document.getElementById('speichernButton');
+  const statusEl = document.getElementById('status');
+  const infoZeile = document.getElementById('infoZeile');
+
+  function zeigeStatus(text, art) {
+    statusEl.className = art ? ('status ' + art) : 'status';
+    statusEl.textContent = text;
+  }
+
+  async function statusLaden() {
+    try {
+      const res = await fetch('/wlan/status');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+
+      if (data.ssid_konfiguriert) ssidInput.value = data.ssid_konfiguriert;
+
+      if (data.modus === 'hotspot') {
+        hinweisEl.className = 'hinweis hotspot';
+        const restMin = Math.ceil((data.hotspot_rest_sek || 0) / 60);
+        hinweisEl.textContent = 'Verbindung zu "' + (data.ssid_konfiguriert || '?') +
+          '" fehlgeschlagen. Der Pico ist als Hotspot "' + data.hotspot_ssid +
+          '" erreichbar. Bitte WLAN-Zugangsdaten eingeben - der Pico startet danach neu ' +
+          'und versucht es erneut (automatischer Neuversuch in ca. ' + restMin + ' Min.).';
+        navZeile.style.display = 'none';
+      } else {
+        hinweisEl.className = 'hinweis normal';
+        hinweisEl.textContent = 'Aktuell verbunden mit "' + (data.ssid_konfiguriert || '?') +
+          '" (' + (data.ip || '?') + '). Neue Zugangsdaten hier speichern, um das WLAN zu wechseln.';
+        navZeile.style.display = 'block';
+      }
+
+      infoZeile.textContent = data.hostname + ' - ' + (data.ip || '?');
+    } catch (err) {
+      hinweisEl.className = 'hinweis hotspot';
+      hinweisEl.textContent = 'Status konnte nicht geladen werden - trotzdem koennen hier neue Zugangsdaten gespeichert werden.';
+    }
+  }
+
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const ssid = ssidInput.value.trim();
+    if (!ssid) return;
+
+    speichernButton.disabled = true;
+    zeigeStatus('Speichere...');
+    try {
+      const res = await fetch('/wlan/speichern', {
+        method: 'POST',
+        body: JSON.stringify({ ssid: ssid, password: passwortInput.value }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        zeigeStatus('Gespeichert - Pico startet neu und verbindet sich mit "' + ssid + '".', 'ok');
+      } else {
+        zeigeStatus('Fehler: ' + (data.fehler || 'unbekannt'), 'fehler');
+        speichernButton.disabled = false;
+      }
+    } catch (err) {
+      zeigeStatus('Gespeichert - Verbindung getrennt, der Pico startet vermutlich gerade neu.', 'ok');
+    }
+  });
+
+  statusLaden();
+</script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+# Python
+__pycache__/
+*.pyc
+
+# Buildozer / Android-Build-Artefakte (Android SDK/NDK-Caches, APKs, ...
+# jeweils mehrere GB gross, gehoeren nicht ins Repo)
+android_app/.buildozer/
+android_app/bin/

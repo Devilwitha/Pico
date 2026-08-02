@@ -158,6 +158,12 @@
     color: var(--text-dim);
     letter-spacing: 0.4px;
   }
+  footer a {
+    color: var(--text-dim);
+    text-decoration: none;
+  }
+  footer a:hover { color: var(--accent); }
+  footer .trennpunkt { margin: 0 6px; }
   .trenner {
     height: 1px;
     background: var(--card-border);
@@ -478,18 +484,18 @@
     </div>
     <div class="update-bereich">
       <label class="update-datei" for="updateDatei">
-        <span id="updateDateiName">Datei auswaehlen (main.py oder index.html)</span>
+        <span id="updateDateiName">Datei auswaehlen (.py oder .html)</span>
       </label>
       <input type="file" id="updateDatei" accept=".py,.html" hidden>
       <div class="update-aktionen">
         <button type="button" class="update-btn" id="updateButton" disabled>Update hochladen</button>
         <button type="button" class="neustart-btn" id="neustartButton">Neustart</button>
       </div>
-      <div class="update-info" id="updateInfo">.py ersetzt main.py und startet den Pico neu, .html ersetzt index.html ohne Neustart. Ungueltige Dateien werden automatisch abgelehnt.</div>
+      <div class="update-info" id="updateInfo">Die Datei wird unter ihrem eigenen Namen gespeichert - existiert schon eine gleichnamige Datei, wird nur diese ersetzt (Backup bleibt erhalten). .py-Dateien werden auf gueltiges Python geprueft und starten den Pico danach neu, andere Dateien (z.B. .html) sofort ohne Neustart.</div>
     </div>
 
     <div class="trenner"></div>
-    <footer>Raspberry Pi Pico W</footer>
+    <footer>Raspberry Pi Pico W<span class="trennpunkt">&middot;</span><a href="/einstellungen.html">Einstellungen</a><span class="trennpunkt">&middot;</span><a href="/dateien.html">Dateien</a></footer>
   </div>
 
 <script>
@@ -557,8 +563,12 @@
   const automatikTimerEl = document.getElementById('automatikTimer');
   const automatikSubEl = document.getElementById('automatikSub');
 
-  let automatikTickTimer = null;
-  let restSekunden = 0;
+  // Countdown-Anzeigen (Automatik, Bewegungserkennung, Laufzeit, Verlauf)
+  // laufen lokal jede Sekunde weiter (siehe sekundenTick() weiter unten) -
+  // vom Pico geholt wird der tatsaechliche Stand nur alle 10s, das reicht
+  // fuer einen Mikrocontroller-Webserver voellig aus.
+  let automatikAktiv = false;
+  let automatikRestSekunden = 0;
 
   function formatZeit(sek) {
     sek = Math.max(0, Math.round(sek));
@@ -567,16 +577,13 @@
     return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
   }
 
-  function timerAnzeigeAktualisieren() {
-    automatikTimerEl.textContent = formatZeit(restSekunden);
-  }
-
   function automatikAnzeigen(data) {
     automatikToggle.checked = !!data.aktiv;
     sitzenInput.disabled = !!data.aktiv;
     stehenInput.disabled = !!data.aktiv;
     startPhaseSelect.disabled = !!data.aktiv;
     automatikStatusEl.classList.toggle('aktiv', !!data.aktiv);
+    automatikAktiv = !!data.aktiv;
 
     if (data.aktiv) {
       if (data.sitzen_min) sitzenInput.value = data.sitzen_min;
@@ -586,20 +593,12 @@
       const naechstePhase = data.phase === 'sitzen' ? 'Stehen' : 'Sitzen';
       automatikPhaseEl.textContent = 'Aktiv - ' + aktuellePhase;
       automatikSubEl.textContent = 'bis Wechsel zu "' + naechstePhase + '"';
-      restSekunden = data.rest_sek;
-      timerAnzeigeAktualisieren();
-
-      if (!automatikTickTimer) {
-        automatikTickTimer = setInterval(() => {
-          restSekunden = Math.max(0, restSekunden - 1);
-          timerAnzeigeAktualisieren();
-        }, 1000);
-      }
+      automatikRestSekunden = data.rest_sek;
+      automatikTimerEl.textContent = formatZeit(automatikRestSekunden);
     } else {
       automatikPhaseEl.textContent = 'Automatik';
       automatikTimerEl.textContent = '--:--';
       automatikSubEl.textContent = 'ausgeschaltet';
-      if (automatikTickTimer) { clearInterval(automatikTickTimer); automatikTickTimer = null; }
     }
   }
 
@@ -640,17 +639,22 @@
   const anwesenheitDistanzEl = document.getElementById('anwesenheitDistanz');
   const anwesenheitSubEl = document.getElementById('anwesenheitSub');
 
+  let anwesenheitAktiv = false;
+  let anwesenheitRestSekunden = 0;
+
   function anwesenheitAnzeigen(data) {
     anwesenheitToggle.checked = !!data.aktiv;
     abfrageInput.disabled = !!data.aktiv;
     timeoutInput.disabled = !!data.aktiv;
     anwesenheitStatusEl.classList.toggle('aktiv', !!data.aktiv);
+    anwesenheitAktiv = !!data.aktiv;
 
     if (data.aktiv) {
       if (data.abfrage_sek) abfrageInput.value = data.abfrage_sek;
       if (data.keine_aenderung_min) timeoutInput.value = data.keine_aenderung_min;
       anwesenheitPhaseEl.textContent = (data.distanz_cm != null ? data.distanz_cm : '--') + ' cm';
-      anwesenheitDistanzEl.textContent = formatZeit(data.rest_sek);
+      anwesenheitRestSekunden = data.rest_sek;
+      anwesenheitDistanzEl.textContent = formatZeit(anwesenheitRestSekunden);
       anwesenheitSubEl.textContent = 'bis Automatik-Stopp ohne Bewegung';
     } else {
       anwesenheitPhaseEl.textContent = 'Sensor';
@@ -699,15 +703,31 @@
     return sek + 's';
   }
 
+  let infoVerbunden = false;
+  let infoIp = '?';
+  let infoUptimeBasis = 0;
+  let infoUptimeBasisZeit = 0;
+
+  function infoZeileRendern() {
+    if (!infoVerbunden) return;
+    const vergangen = (Date.now() - infoUptimeBasisZeit) / 1000;
+    infoZeile.textContent = infoIp + ' - Laufzeit ' + formatDauer(infoUptimeBasis + vergangen);
+  }
+
   async function infoAbrufen() {
     try {
       const res = await fetch('/info');
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
-      infoZeile.textContent = (data.ip || '?') + ' - Laufzeit ' + formatDauer(data.uptime_sek);
+      infoVerbunden = true;
+      infoIp = data.ip || '?';
+      infoUptimeBasis = data.uptime_sek;
+      infoUptimeBasisZeit = Date.now();
+      infoZeileRendern();
       livePunkt.className = 'live-punkt online';
       if (data.version) versionAnzeige.textContent = 'v' + data.version;
     } catch (err) {
+      infoVerbunden = false;
       infoZeile.textContent = 'Keine Verbindung zum Pico';
       livePunkt.className = 'live-punkt offline';
     }
@@ -726,26 +746,35 @@
     return 'vor ' + Math.floor(m / 60) + 'h';
   }
 
+  let verlaufBasis = [];
+  let verlaufBasisZeit = 0;
+
+  function verlaufRendern() {
+    if (!verlaufBasis.length) {
+      verlaufListe.innerHTML = '<li class="verlauf-leer">Noch keine Aktionen</li>';
+      return;
+    }
+    const vergangenSek = Math.floor((Date.now() - verlaufBasisZeit) / 1000);
+    verlaufListe.innerHTML = verlaufBasis.map(e => {
+      const icon = VERLAUF_ICON[e.aktion] || '&#8226;';
+      const label = VERLAUF_LABEL[e.aktion] || e.aktion;
+      const badgeText = VERLAUF_BADGE[e.quelle];
+      const badge = badgeText ? '<span class="verlauf-badge">' + badgeText + '</span>' : '';
+      return '<li>' +
+        '<span class="verlauf-icon">' + icon + '</span>' +
+        '<span class="verlauf-text">' + label + badge + '</span>' +
+        '<span class="verlauf-zeit">' + formatVor(e.vor_sek + vergangenSek) + '</span>' +
+      '</li>';
+    }).join('');
+  }
+
   async function verlaufAbrufen() {
     try {
       const res = await fetch('/verlauf');
       if (!res.ok) throw new Error('HTTP ' + res.status);
-      const eintraege = await res.json();
-      if (!eintraege.length) {
-        verlaufListe.innerHTML = '<li class="verlauf-leer">Noch keine Aktionen</li>';
-        return;
-      }
-      verlaufListe.innerHTML = eintraege.map(e => {
-        const icon = VERLAUF_ICON[e.aktion] || '&#8226;';
-        const label = VERLAUF_LABEL[e.aktion] || e.aktion;
-        const badgeText = VERLAUF_BADGE[e.quelle];
-        const badge = badgeText ? '<span class="verlauf-badge">' + badgeText + '</span>' : '';
-        return '<li>' +
-          '<span class="verlauf-icon">' + icon + '</span>' +
-          '<span class="verlauf-text">' + label + badge + '</span>' +
-          '<span class="verlauf-zeit">' + formatVor(e.vor_sek) + '</span>' +
-        '</li>';
-      }).join('');
+      verlaufBasis = await res.json();
+      verlaufBasisZeit = Date.now();
+      verlaufRendern();
     } catch (err) {
       // Verlauf wird beim naechsten Poll erneut versucht
     }
@@ -764,10 +793,6 @@
     updateInfo.textContent = text;
   }
 
-  function updateZielErmitteln(dateiname) {
-    return dateiname.toLowerCase().endsWith('.html') ? 'index.html' : 'main.py';
-  }
-
   updateDatei.addEventListener('change', () => {
     const datei = updateDatei.files[0];
     if (datei) {
@@ -775,7 +800,7 @@
       updateDateiLabel.classList.add('gewaehlt');
       updateButton.disabled = false;
     } else {
-      updateDateiName.textContent = 'Datei auswaehlen (main.py oder index.html)';
+      updateDateiName.textContent = 'Datei auswaehlen (.py oder .html)';
       updateDateiLabel.classList.remove('gewaehlt');
       updateButton.disabled = true;
     }
@@ -784,8 +809,11 @@
   updateButton.addEventListener('click', async () => {
     const datei = updateDatei.files[0];
     if (!datei) return;
-    const ziel = updateZielErmitteln(datei.name);
-    if (!confirm(ziel + ' mit "' + datei.name + '" ersetzen' + (ziel === 'main.py' ? ' und Pico neu starten?' : '?'))) return;
+    // Die Datei behaelt ihren eigenen Namen: existiert er schon auf dem
+    // Pico, wird nur diese eine Datei ersetzt - sonst wird sie neu angelegt.
+    const ziel = datei.name;
+    const istPython = ziel.toLowerCase().endsWith('.py');
+    if (!confirm('"' + ziel + '" auf dem Pico speichern' + (istPython ? ' und danach neu starten?' : '?'))) return;
 
     updateButton.disabled = true;
     neustartButton.disabled = true;
@@ -823,9 +851,11 @@
     setTimeout(() => location.reload(), 8000);
   });
 
-  // Seite aktualisiert sich alle 10s selbststaendig (Info, Verlauf, Automatik-
-  // und Anwesenheits-Status), damit der aktuelle Zustand des Picos jederzeit
-  // sichtbar ist, ohne die Seite neu zu laden.
+  // Seite holt sich den tatsaechlichen Stand alle 10s vom Pico (Info, Verlauf,
+  // Automatik- und Anwesenheits-Status) - das reicht fuer einen
+  // Mikrocontroller-Webserver voellig aus. Die angezeigten Zeiten (Laufzeit,
+  // Countdowns, "vor Xs" im Verlauf) laufen dazwischen lokal jede Sekunde
+  // weiter, damit sie nicht wie eingefroren wirken.
   function seiteAktualisieren() {
     infoAbrufen();
     verlaufAbrufen();
@@ -833,8 +863,22 @@
     anwesenheitStatusAbrufen();
   }
 
+  function sekundenTick() {
+    if (automatikAktiv) {
+      automatikRestSekunden = Math.max(0, automatikRestSekunden - 1);
+      automatikTimerEl.textContent = formatZeit(automatikRestSekunden);
+    }
+    if (anwesenheitAktiv) {
+      anwesenheitRestSekunden = Math.max(0, anwesenheitRestSekunden - 1);
+      anwesenheitDistanzEl.textContent = formatZeit(anwesenheitRestSekunden);
+    }
+    infoZeileRendern();
+    verlaufRendern();
+  }
+
   seiteAktualisieren();
   setInterval(seiteAktualisieren, 10000);
+  setInterval(sekundenTick, 1000);
 </script>
 </body>
 </html>

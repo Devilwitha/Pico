@@ -10,9 +10,24 @@ Objekt naeher als ein im Web einstellbarer Schwellwert ist) und eine
 WLAN-Update-Funktion: im Browser eine neue Version dieser Datei hochladen,
 der Pico prueft sie auf gueltiges Python, ersetzt main.py und startet neu.
 
-Einfach WLAN_SSID / WLAN_PASSWORT unten eintragen (oder eine Datei
-"wlan.conf" mit {"ssid": "...", "password": "..."} neben dieses Skript
-legen) und als main.py auf den Pico W kopieren.
+Die WLAN-Verbindung (inkl. Hotspot-Fallback) und die Update-Funktion stecken
+nicht hier, sondern in den wiederverwendbaren Modulen pico_tools/wlan.py und
+pico_tools/update.py (koennen 1:1 in andere Pico-Projekte kopiert werden).
+
+WLAN-Einstellungen werden in "wlan.conf" gespeichert und beim Start geladen.
+Schlaegt die Verbindung nach mehreren Versuchen fehl, oeffnet der Pico einen
+eigenen Hotspot mit einer Recovery-Seite (einstellungen.html), auf der neue
+Zugangsdaten eingegeben werden koennen - danach startet der Pico neu und
+versucht es erneut. Bleibt der Hotspot laenger als HOTSPOT_TIMEOUT_SEK ohne
+neue Einrichtung aktiv, startet der Pico von selbst neu und versucht es
+wieder mit dem konfigurierten WLAN. Ausserdem antwortet der Pico auf
+UDP-Broadcast-Anfragen (DISCOVERY_PORT), damit ihn Clients (z.B. die
+Android-App) automatisch im Netz bzw. im eigenen Hotspot finden.
+
+Einfach WLAN_SSID / WLAN_PASSWORT unten eintragen (oder ueber die
+Einstellungen-Seite im Browser setzen, das erzeugt automatisch eine Datei
+"wlan.conf" mit {"ssid": "...", "password": "..."} neben diesem Skript) und
+als main.py auf den Pico W kopieren.
 
 Verkabelung Grove Ultrasonic Ranger (siehe PIN_SIG_ULTRASCHALL unten):
   Schwarz (GND) -> GND
@@ -21,7 +36,6 @@ Verkabelung Grove Ultrasonic Ranger (siehe PIN_SIG_ULTRASCHALL unten):
   Weiss   (NC)  -> nicht anschliessen
 """
 
-import network
 import socket
 import time
 import json
@@ -31,11 +45,13 @@ import machine
 import _thread
 from machine import Pin, time_pulse_us
 
+from pico_tools import wlan, update
+
 # ---------------------------------------------------------------------------
 # Konfiguration
 # ---------------------------------------------------------------------------
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 WLAN_SSID = "FRITZ!Box 5530 BA_2GEXT"
 WLAN_PASSWORT = "1234567890"
@@ -57,6 +73,22 @@ PIN_SITZEN = 12
 # GPIO fuer die SIG-Leitung (gelbes Kabel) des Grove Ultrasonic Ranger
 PIN_SIG_ULTRASCHALL = 15
 
+# Wie oft und wie lange die Verbindung zum konfigurierten WLAN versucht wird,
+# bevor der Pico stattdessen den Recovery-Hotspot oeffnet
+WLAN_MAX_VERSUCHE = 3
+WLAN_VERSUCH_TIMEOUT = 15
+
+# Zugangsdaten und Verhalten des Recovery-Hotspots (aktiv, wenn keine
+# Verbindung zum konfigurierten WLAN moeglich ist)
+AP_SSID = "PicoSteuerung-Setup"
+AP_PASSWORT = "picosetup123"  # mind. 8 Zeichen (WPA2-Vorgabe)
+HOTSPOT_TIMEOUT_SEK = 10 * 60
+
+# Port fuer die UDP-Discovery, ueber die Clients (z.B. die App) den Pico per
+# Broadcast im WLAN oder im Hotspot automatisch finden
+DISCOVERY_PORT = 4210
+DISCOVERY_ANFRAGE = b"PICO_DISCOVER"
+
 # Wie lange "stehen"/"sitzen" aktiviert werden (Sekunden). "auf"/"ab" sind
 # stattdessen Halte-Aktionen: aktiv solange der Button gedrueckt ist.
 IMPULS_DAUER = 0.5
@@ -75,10 +107,9 @@ AKTIONEN = {
 for _pin in AKTIONEN.values():
     _pin.value(0)
 
-# Zeitpunkt des Skriptstarts (fuer die Laufzeit-Anzeige) und die zuletzt
-# vergebene IP-Adresse (fuer die Info-Zeile im Web-UI)
+# Zeitpunkt des Skriptstarts (fuer die Laufzeit-Anzeige). Aktuelle IP und
+# Netz-Modus ("normal"/"hotspot") liefert pico_tools.wlan (wlan.ip/wlan.modus).
 BOOT_ZEIT = time.time()
-AKTUELLE_IP = ""
 
 # Kurzer Verlauf der letzten Aktionen (manuell oder durch die Automatik
 # ausgeloest), neueste zuerst
@@ -105,7 +136,7 @@ def verlauf_abfragen():
 
 def geraeteinfo():
     return {
-        "ip": AKTUELLE_IP,
+        "ip": wlan.ip,
         "hostname": GERAETENAME,
         "uptime_sek": int(time.time() - BOOT_ZEIT),
         "version": VERSION,
@@ -113,121 +144,43 @@ def geraeteinfo():
 
 
 # ---------------------------------------------------------------------------
-# WLAN-Update: neue Skript-Version per Datei-Upload einspielen
+# Dateiverwaltung: Dateien auf dem Pico auflisten, lesen und loeschen (zum
+# Hochladen/Ueberschreiben bzw. Neuanlegen wird der bestehende /update-
+# Endpunkt genutzt - eine gespeicherte Datei ist technisch nichts anderes
+# als ein Update auf die jeweils eigene Datei).
 # ---------------------------------------------------------------------------
 
-# Erlaubte Update-Ziele (Whitelist gegen beliebige Zielpfade). "python_pruefen"
-# steuert, ob die Datei per compile() als gueltiges Python geprueft wird
-# (nur main.py), "neustart" ob der Pico danach neu startet (index.html wird
-# beim naechsten Aufruf einfach frisch von der Platte gelesen, kein Reset noetig).
-UPDATE_ZIELE = {
-    "main.py": {"temp": "main_neu.py", "backup": "main_backup.py", "python_pruefen": True, "neustart": True},
-    "index.html": {"temp": "index_neu.html", "backup": "index_backup.html", "python_pruefen": False, "neustart": False},
-}
+# Dateien, die sich ueber die Dateiverwaltung nicht loeschen lassen, damit
+# sich der Pico darueber nicht versehentlich selbst lahmlegt
+DATEIEN_GESCHUETZT = ("main.py", "boot.py")
 
 
-def update_empfangen(temp_datei, client, laenge, bereits_gelesen):
-    """Liest genau `laenge` Bytes vom Socket und schreibt sie direkt (in
-    kleinen Stuecken) in eine temporaere Datei, statt alles im RAM zu halten."""
-    geschrieben = 0
-    with open(temp_datei, "wb") as f:
-        if bereits_gelesen:
-            f.write(bereits_gelesen)
-            geschrieben += len(bereits_gelesen)
-        while geschrieben < laenge:
-            stueck = client.recv(min(1024, laenge - geschrieben))
-            if not stueck:
-                break
-            f.write(stueck)
-            geschrieben += len(stueck)
-    return geschrieben == laenge
+def dateien_auflisten():
+    """Alle Dateien im Wurzelverzeichnis mit Groesse, Ordner werden
+    uebersprungen (der Pico legt hier ohnehin keine Unterordner an)."""
+    ergebnis = []
+    for name in os.listdir():
+        try:
+            eintrag = os.stat(name)
+        except OSError:
+            continue
+        ist_ordner = (eintrag[0] & 0x4000) != 0  # S_IFDIR
+        if ist_ordner:
+            continue
+        ergebnis.append({"name": name, "groesse": eintrag[6]})
+    ergebnis.sort(key=lambda e: e["name"])
+    return ergebnis
 
 
-def update_pruefen(pfad, python_pruefen):
-    """Prueft die hochgeladene Datei, bevor das Ziel ueberschrieben wird:
-    bei main.py per compile() auf gueltiges Python, sonst nur auf
-    nicht-leeren Inhalt. gc.collect() davor schafft moeglichst viel
-    zusammenhaengenden freien Speicher, da compile() kurzzeitig deutlich
-    mehr RAM braucht als die Dateigroesse selbst."""
-    gc.collect()
-    try:
-        with open(pfad) as f:
-            inhalt = f.read()
-        if not inhalt.strip():
-            return False, "Datei ist leer"
-        if python_pruefen:
-            gc.collect()
-            compile(inhalt, pfad, "exec")
-        return True, None
-    except Exception as exc:
-        praefix = "Ungueltiges Python: " if python_pruefen else "Fehler: "
-        return False, praefix + str(exc)
-
-
-def update_uebernehmen(ziel, konfig):
-    """Ersetzt die Zieldatei durch die neue Version, alte Version bleibt als Backup."""
-    try:
-        os.remove(konfig["backup"])
-    except OSError:
-        pass
-    try:
-        os.rename(ziel, konfig["backup"])
-    except OSError:
-        pass
-    os.rename(konfig["temp"], ziel)
-
-
-def update_aufraeumen(temp_datei):
-    try:
-        os.remove(temp_datei)
-    except OSError:
-        pass
-
-
-def lade_wlan_zugangsdaten():
-    """Liest ssid/password aus wlan.conf falls vorhanden, sonst Konstanten oben."""
-    try:
-        with open("wlan.conf") as f:
-            daten = json.load(f)
-            ssid = daten.get("ssid") or WLAN_SSID
-            passwort = daten.get("password") or WLAN_PASSWORT
-            return ssid, passwort
-    except OSError:
-        return WLAN_SSID, WLAN_PASSWORT
-
-
-def hostname_setzen(name):
-    """Setzt den DHCP-Hostnamen, ueber den der Pico im lokalen Netz sichtbar ist."""
-    try:
-        network.hostname(name)
-    except (AttributeError, OSError):
-        pass
-
-
-def mit_wlan_verbinden(ssid, passwort, timeout=20):
-    global AKTUELLE_IP
-    hostname_setzen(GERAETENAME)
-
-    wlan = network.WLAN(network.STA_IF)
-    try:
-        wlan.config(hostname=GERAETENAME)
-    except (ValueError, OSError):
-        pass
-    wlan.active(True)
-    wlan.connect(ssid, passwort)
-
-    start = time.time()
-    while not wlan.isconnected():
-        if time.time() - start > timeout:
-            raise RuntimeError("WLAN-Verbindung fehlgeschlagen (Timeout)")
-        LED.toggle()
-        time.sleep(0.3)
-
-    LED.value(1)
-    ip = wlan.ifconfig()[0]
-    AKTUELLE_IP = ip
-    print("Mit WLAN verbunden, IP-Adresse:", ip, "- Hostname:", GERAETENAME)
-    return wlan
+def datei_lesen_text(pfad, max_bytes=UPDATE_MAX_BYTES):
+    """Liest eine Datei als Text zum Anzeigen/Bearbeiten. Wirft eine
+    Exception bei zu grossen oder nicht-textuellen (binaeren) Dateien -
+    der Aufrufer wandelt das in eine 400-Antwort um."""
+    groesse = os.stat(pfad)[6]
+    if groesse > max_bytes:
+        raise ValueError("Datei ist zu gross zum Anzeigen")
+    with open(pfad) as f:
+        return f.read()
 
 
 def aktion_ausfuehren(name, quelle="manuell"):
@@ -434,14 +387,61 @@ def anwesenheit_tick():
         anwesenheit_letzte_aenderung_zeit = jetzt  # Timer neu starten
 
 
+# ---------------------------------------------------------------------------
+# Geraete-Discovery: Clients (z.B. die Android-App) schicken ein UDP-
+# Broadcast-Paket an DISCOVERY_PORT, der Pico antwortet direkt an den
+# Absender mit seinen Geraetedaten. Funktioniert sowohl im normalen WLAN als
+# auch im eigenen Hotspot, da beides einfach ein IP-Subnetz ist.
+# ---------------------------------------------------------------------------
+
+_discovery_socket = None
+
+
+def discovery_socket_oeffnen():
+    global _discovery_socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("0.0.0.0", DISCOVERY_PORT))
+        s.settimeout(0)  # nicht blockierend - wird im Hintergrund-Tick abgefragt
+        _discovery_socket = s
+    except OSError as exc:
+        print("Discovery-Socket konnte nicht gestartet werden:", exc)
+
+
+def discovery_tick():
+    """Beantwortet hoechstens eine Discovery-Anfrage pro Aufruf, ohne den
+    Hintergrund-Tick zu blockieren (nicht-blockierender Socket)."""
+    if _discovery_socket is None:
+        return
+    try:
+        daten, absender = _discovery_socket.recvfrom(64)
+    except OSError:
+        return  # kein Paket da (EAGAIN) - normal, kein Fehler
+    if daten != DISCOVERY_ANFRAGE:
+        return
+    antwort = json.dumps({
+        "typ": "pico",
+        "hostname": GERAETENAME,
+        "ip": wlan.ip,
+        "modus": wlan.modus,
+        "version": VERSION,
+    })
+    try:
+        _discovery_socket.sendto(antwort.encode("utf-8"), absender)
+    except OSError:
+        pass
+
+
 def hintergrund_thread():
-    """Laeuft dauerhaft auf dem zweiten Kern und kuemmert sich sowohl um
-    die Automatik als auch um die Bewegungserkennung (RP2040 kann nur einen
-    zusaetzlichen _thread gleichzeitig ausfuehren, daher beides in einer
-    Schleife statt in zwei getrennten Threads)."""
+    """Laeuft dauerhaft auf dem zweiten Kern und kuemmert sich um Automatik,
+    Bewegungserkennung und Discovery (RP2040 kann nur einen zusaetzlichen
+    _thread gleichzeitig ausfuehren, daher alles in einer Schleife statt in
+    getrennten Threads)."""
     while True:
         automatik_tick()
         anwesenheit_tick()
+        discovery_tick()
         time.sleep(1)
 
 
@@ -450,14 +450,16 @@ def hintergrund_thread():
 # ---------------------------------------------------------------------------
 
 INDEX_DATEI = "index.html"
+EINSTELLUNGEN_DATEI = "einstellungen.html"
+DATEIEN_DATEI = "dateien.html"
 
 
-def index_seite_senden(client):
-    """Streamt index.html in kleinen Stuecken vom Dateisystem, statt den
+def datei_senden(client, pfad_datei):
+    """Streamt eine HTML-Datei in kleinen Stuecken vom Dateisystem, statt den
     kompletten Inhalt dauerhaft als String im RAM zu halten (main.py bleibt
     dadurch klein genug, um sich per Web-Update selbst syntaktisch pruefen
     zu koennen, ohne dass der Pico dabei aus dem Speicher laeuft)."""
-    groesse = os.stat(INDEX_DATEI)[6]
+    groesse = os.stat(pfad_datei)[6]
     header = (
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: text/html; charset=utf-8\r\n"
@@ -465,7 +467,7 @@ def index_seite_senden(client):
         "Connection: close\r\n\r\n"
     ).format(laenge=groesse)
     _sende_alles(client, header.encode("utf-8"))
-    with open(INDEX_DATEI, "rb") as f:
+    with open(pfad_datei, "rb") as f:
         while True:
             stueck = f.read(512)
             if not stueck:
@@ -552,54 +554,17 @@ def anfrage_bearbeiten(client):
         pfad = teile[1] if len(teile) > 1 else "/"
 
         if methode == "POST" and pfad.startswith("/update"):
-            parameter = query_parsen(pfad)
-            ziel = parameter.get("ziel", "main.py")
-            konfig = UPDATE_ZIELE.get(ziel)
-
-            laenge_text = header_wert(kopf_text, "Content-Length")
-            laenge = int(laenge_text) if laenge_text and laenge_text.isdigit() else 0
-
-            if konfig is None:
-                http_antwort(
-                    client, "400 Bad Request",
-                    json.dumps({"ok": False, "fehler": "Unbekanntes Update-Ziel"}),
-                    "application/json",
-                )
-            elif laenge <= 0 or laenge > UPDATE_MAX_BYTES:
-                http_antwort(
-                    client, "400 Bad Request",
-                    json.dumps({"ok": False, "fehler": "Datei fehlt oder ist zu gross"}),
-                    "application/json",
-                )
-            else:
-                vollstaendig = update_empfangen(konfig["temp"], client, laenge, body_bereits_gelesen)
-                if not vollstaendig:
-                    update_aufraeumen(konfig["temp"])
-                    http_antwort(
-                        client, "400 Bad Request",
-                        json.dumps({"ok": False, "fehler": "Uebertragung unvollstaendig"}),
-                        "application/json",
-                    )
-                else:
-                    gueltig, fehler = update_pruefen(konfig["temp"], konfig["python_pruefen"])
-                    if not gueltig:
-                        update_aufraeumen(konfig["temp"])
-                        http_antwort(
-                            client, "400 Bad Request",
-                            json.dumps({"ok": False, "fehler": fehler}),
-                            "application/json",
-                        )
-                    else:
-                        update_uebernehmen(ziel, konfig)
-                        http_antwort(
-                            client, "200 OK",
-                            json.dumps({"ok": True, "neustart": konfig["neustart"]}),
-                            "application/json",
-                        )
-                        if konfig["neustart"]:
-                            client.close()
-                            time.sleep(0.5)
-                            machine.reset()
+            update.anfrage_bearbeiten(
+                client, pfad, lambda name: header_wert(kopf_text, name),
+                body_bereits_gelesen, http_antwort, max_bytes=UPDATE_MAX_BYTES,
+            )
+        elif methode == "POST" and pfad.startswith("/wlan/speichern"):
+            wlan.speichern_anfrage_bearbeiten(
+                client, lambda name: header_wert(kopf_text, name),
+                body_bereits_gelesen, http_antwort,
+            )
+        elif pfad.startswith("/wlan/status"):
+            http_antwort(client, "200 OK", json.dumps(wlan.status()), "application/json")
         elif pfad.startswith("/neustart"):
             http_antwort(client, "200 OK", json.dumps({"ok": True}), "application/json")
             client.close()
@@ -668,8 +633,70 @@ def anfrage_bearbeiten(client):
                 json.dumps({"ok": erfolg, "aktion": name}),
                 "application/json",
             )
-        elif pfad == "/" or pfad == "/index.html":
-            index_seite_senden(client)
+        elif pfad.startswith("/dateien/liste"):
+            http_antwort(client, "200 OK", json.dumps(dateien_auflisten()), "application/json")
+        elif pfad.startswith("/dateien/lesen"):
+            parameter = query_parsen(pfad)
+            name = parameter.get("name", "")
+            if not update.ziel_gueltig(name):
+                http_antwort(
+                    client, "400 Bad Request",
+                    json.dumps({"ok": False, "fehler": "Ungueltiger Dateiname"}),
+                    "application/json",
+                )
+            else:
+                try:
+                    inhalt = datei_lesen_text(name)
+                    http_antwort(client, "200 OK", inhalt, "text/plain; charset=utf-8")
+                except OSError:
+                    http_antwort(
+                        client, "404 Not Found",
+                        json.dumps({"ok": False, "fehler": "Datei nicht gefunden"}),
+                        "application/json",
+                    )
+                except Exception as exc:
+                    http_antwort(
+                        client, "400 Bad Request",
+                        json.dumps({"ok": False, "fehler": str(exc)}),
+                        "application/json",
+                    )
+        elif pfad.startswith("/dateien/loeschen"):
+            parameter = query_parsen(pfad)
+            name = parameter.get("name", "")
+            if not update.ziel_gueltig(name):
+                http_antwort(
+                    client, "400 Bad Request",
+                    json.dumps({"ok": False, "fehler": "Ungueltiger Dateiname"}),
+                    "application/json",
+                )
+            elif name in DATEIEN_GESCHUETZT:
+                http_antwort(
+                    client, "400 Bad Request",
+                    json.dumps({"ok": False, "fehler": name + " kann nicht geloescht werden"}),
+                    "application/json",
+                )
+            else:
+                try:
+                    os.remove(name)
+                    http_antwort(client, "200 OK", json.dumps({"ok": True}), "application/json")
+                except OSError as exc:
+                    http_antwort(
+                        client, "404 Not Found",
+                        json.dumps({"ok": False, "fehler": str(exc)}),
+                        "application/json",
+                    )
+        elif pfad == "/dateien" or pfad == "/dateien.html":
+            datei_senden(client, DATEIEN_DATEI)
+        elif pfad == "/einstellungen" or pfad == "/einstellungen.html":
+            datei_senden(client, EINSTELLUNGEN_DATEI)
+        elif pfad == "/":
+            # Im Hotspot-Modus (WLAN-Verbindung fehlgeschlagen) landet man
+            # direkt auf der Recovery-/Einstellungen-Seite. /index.html
+            # bleibt trotzdem erreichbar, damit die Steuerung auch ueber den
+            # Hotspot direkt nutzbar ist.
+            datei_senden(client, EINSTELLUNGEN_DATEI if wlan.modus == "hotspot" else INDEX_DATEI)
+        elif pfad == "/index.html":
+            datei_senden(client, INDEX_DATEI)
         else:
             http_antwort(client, "404 Not Found", "Nicht gefunden")
     except Exception as exc:
@@ -693,14 +720,26 @@ def webserver_starten(port=80):
 
 
 def main():
-    ssid, passwort = lade_wlan_zugangsdaten()
-    if not ssid:
-        raise RuntimeError(
-            "Kein WLAN konfiguriert. Bitte WLAN_SSID/WLAN_PASSWORT im Skript "
-            "setzen oder eine wlan.conf mit ssid/password anlegen."
-        )
-    mit_wlan_verbinden(ssid, passwort)
-    _thread.start_new_thread(hintergrund_thread, ())
+    discovery_socket_oeffnen()
+
+    wlan.AP_SSID = AP_SSID
+    wlan.AP_PASSWORT = AP_PASSWORT
+    wlan.HOTSPOT_TIMEOUT_SEK = HOTSPOT_TIMEOUT_SEK
+    wlan.LED = LED
+
+    _netz, modus = wlan.verbinden(
+        hostname=GERAETENAME,
+        standard_ssid=WLAN_SSID,
+        standard_passwort=WLAN_PASSWORT,
+        versuche=WLAN_MAX_VERSUCHE,
+        timeout=WLAN_VERSUCH_TIMEOUT,
+    )
+
+    if modus == "normal":
+        _thread.start_new_thread(hintergrund_thread, ())
+    else:
+        _thread.start_new_thread(wlan.hotspot_timeout_thread, (discovery_tick,))
+
     webserver_starten()
 
 
