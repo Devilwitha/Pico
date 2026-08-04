@@ -14,9 +14,7 @@ requirements = python3,kivy==2.3.0,pyjnius
 orientation = portrait
 fullscreen = 0
 
-# Kein eigenes icon.filename gesetzt - buildozer verwendet das Standard-
-# Kivy-Icon. Eigenes Icon: icon.png (kein Alpha-Kanal noetig) neben diese
-# Datei legen und "icon.filename = %(source.dir)s/icon.png" ergaenzen.
+icon.filename = %(source.dir)s/icon.png
 
 # WiFi-Vorschlag (WifiNetworkSuggestion), Discovery per UDP-Broadcast und
 # HTTP-Zugriff auf den Pico im lokalen Netz/Hotspot benoetigen diese
