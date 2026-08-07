@@ -151,6 +151,18 @@
     cursor: not-allowed;
     transform: none;
   }
+  .grid-klein {
+    margin-top: 10px;
+  }
+  .grid-klein button {
+    padding: 12px 8px;
+    font-size: 12.5px;
+    border-radius: 14px;
+    gap: 6px;
+  }
+  .grid-klein button .icon {
+    font-size: 18px;
+  }
   footer {
     margin-top: 24px;
     text-align: center;
@@ -408,6 +420,10 @@
       <button data-aktion="ab" data-modus="halten"><span class="icon">&#8595;</span>Ab</button>
       <button data-aktion="stehen" data-modus="impuls"><span class="icon">&#128694;</span>Stehen</button>
       <button data-aktion="sitzen" data-modus="impuls"><span class="icon">&#128719;</span>Sitzen</button>
+    </div>
+    <div class="grid grid-klein">
+      <button data-aktion="stehen_setzen" data-modus="impuls"><span class="icon">&#128190;</span>Stehposition setzen</button>
+      <button data-aktion="sitzen_setzen" data-modus="impuls"><span class="icon">&#128190;</span>Sitzposition setzen</button>
     </div>
 
     <div class="trenner"></div>
@@ -773,8 +789,8 @@
 
   // --- Verlauf der letzten Aktionen ---
   const verlaufListe = document.getElementById('verlaufListe');
-  const VERLAUF_ICON = { auf: '&#8593;', ab: '&#8595;', stehen: '&#128694;', sitzen: '&#128719;', automatik_ein: '&#9654;', automatik_aus: '&#9208;' };
-  const VERLAUF_LABEL = { auf: 'Auf', ab: 'Ab', stehen: 'Stehen', sitzen: 'Sitzen', automatik_ein: 'Automatik gestartet', automatik_aus: 'Automatik gestoppt' };
+  const VERLAUF_ICON = { auf: '&#8593;', ab: '&#8595;', stehen: '&#128694;', sitzen: '&#128719;', stehen_setzen: '&#128190;', sitzen_setzen: '&#128190;', automatik_ein: '&#9654;', automatik_aus: '&#9208;' };
+  const VERLAUF_LABEL = { auf: 'Auf', ab: 'Ab', stehen: 'Stehen', sitzen: 'Sitzen', stehen_setzen: 'Stehposition gesetzt', sitzen_setzen: 'Sitzposition gesetzt', automatik_ein: 'Automatik gestartet', automatik_aus: 'Automatik gestoppt' };
   const VERLAUF_BADGE = { automatik: 'Automatik', sensor: 'Sensor' };
 
   function formatVor(sek) {

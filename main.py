@@ -94,6 +94,15 @@ DISCOVERY_ANFRAGE = b"PICO_DISCOVER"
 # stattdessen Halte-Aktionen: aktiv solange der Button gedrueckt ist.
 IMPULS_DAUER = 0.5
 
+# "Sitzposition setzen"/"Stehposition setzen": haelt dasselbe Relais/GPIO wie
+# "sitzen"/"stehen" laenger gedrueckt (5s), damit das Aktuator-Steuergeraet
+# die aktuelle Position als neue Sitz-/Stehposition einlernt.
+IMPULS_DAUER_SETZEN = 5.0
+IMPULS_DAUERN = {
+    "sitzen_setzen": IMPULS_DAUER_SETZEN,
+    "stehen_setzen": IMPULS_DAUER_SETZEN,
+}
+
 # Aktionen, die per Start/Stop (Halten) statt per Impuls gesteuert werden
 HALTE_AKTIONEN = ("auf", "ab")
 
@@ -105,6 +114,11 @@ AKTIONEN = {
     "stehen": Pin(PIN_STEHEN, Pin.OUT),
     "sitzen": Pin(PIN_SITZEN, Pin.OUT),
 }
+# "Position setzen"-Aktionen nutzen bewusst dasselbe Pin-Objekt (also
+# dasselbe Relais/GPIO) wie die zugehoerige normale Aktion, nur mit
+# laengerer Impulsdauer (siehe IMPULS_DAUERN).
+AKTIONEN["stehen_setzen"] = AKTIONEN["stehen"]
+AKTIONEN["sitzen_setzen"] = AKTIONEN["sitzen"]
 for _pin in AKTIONEN.values():
     _pin.value(0)
 
@@ -185,12 +199,13 @@ def datei_lesen_text(pfad, max_bytes=UPDATE_MAX_BYTES):
 
 
 def aktion_ausfuehren(name, quelle="manuell"):
-    """Kurzer Impuls fuer Aktionen wie 'stehen'/'sitzen'."""
+    """Kurzer Impuls fuer Aktionen wie 'stehen'/'sitzen', laengerer Impuls
+    (5s) fuer die 'Position setzen'-Aktionen (siehe IMPULS_DAUERN)."""
     pin = AKTIONEN.get(name)
     if pin is None or name in HALTE_AKTIONEN:
         return False
     pin.value(1)
-    time.sleep(IMPULS_DAUER)
+    time.sleep(IMPULS_DAUERN.get(name, IMPULS_DAUER))
     pin.value(0)
     verlauf_eintragen(name, quelle)
     return True
@@ -290,7 +305,7 @@ def automatik_tick():
 
 anwesenheit_aktiv = True
 anwesenheit_abfrage_sek = 1          # wie oft der Sensor abgefragt wird
-anwesenheit_keine_aenderung_sek = 10 * 60  # Timeout bis zum Abschalten
+anwesenheit_keine_aenderung_sek = 5 * 60  # Timeout bis zum Abschalten
 anwesenheit_schwellwert_cm = 1       # ab dieser Aenderung (cm) gegenueber dem Referenzwert gilt das als Bewegung
 anwesenheit_letzte_distanz_cm = None  # letzter GUELTIGER Messwert - bleibt bei "kein Echo" erhalten
 anwesenheit_anwesend = False
