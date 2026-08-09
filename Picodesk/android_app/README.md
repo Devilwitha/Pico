@@ -29,14 +29,17 @@ und Update-Upload - nativ dargestellt statt im Browser.
   gedrueckt, damit das Aktuator-Steuergeraet die aktuelle Position einlernt
   (siehe `IMPULS_DAUER_SETZEN` in `main.py` auf dem Pico).
 - **Dateien** (Ordner-Symbol in der Kopfleiste): Dateien auf dem Pico
-  durchsuchen, bearbeiten, neu anlegen und loeschen - identisch zu
-  `dateien.html`. Speichern/Anlegen laeuft ueber denselben `/update`-
-  Mechanismus wie unten beschrieben. `main.py`/`boot.py` sind vor dem
-  Loeschen geschuetzt.
-- **Update**: Karte unten auf dem Steuerung-Bildschirm - waehlt eine Datei
-  vom Geraet (per [plyer](https://github.com/kivy/plyer) `filechooser`) und
-  laedt sie unter ihrem eigenen Namen auf den Pico hoch (Backup als
-  `<name>.bak`, `.py`-Dateien werden geprueft und starten den Pico neu).
+  durchsuchen, bearbeiten, neu anlegen, loeschen - und ueber "Hochladen"
+  auch direkt eine oder mehrere Dateien vom Geraet hochladen - identisch zu
+  `dateien.html`. Speichern/Anlegen/Hochladen laeuft ueber denselben
+  `/update`-Mechanismus wie unten beschrieben. `main.py`/`boot.py` sind vor
+  dem Loeschen geschuetzt.
+- **Update**: Karte unten auf dem Steuerung-Bildschirm - waehlt eine oder
+  mehrere Dateien vom Geraet (per [plyer](https://github.com/kivy/plyer)
+  `filechooser`) und laedt sie nacheinander unter ihrem eigenen Namen auf den
+  Pico hoch (Backup als `<name>.bak`, `.py`-Dateien werden geprueft, zuletzt
+  hochgeladen und starten den Pico neu - die App wartet danach automatisch,
+  bis er wieder erreichbar ist, bevor die naechste Datei folgt).
 
 ## Automatisches Finden des Pico
 
@@ -68,21 +71,27 @@ versucht danach wieder, sich mit dem konfigurierten WLAN zu verbinden
 ## Build (Windows)
 
 Buildozer (das Kivy-Android-Build-Tool) laeuft nur unter Linux. Unter
-Windows daher `build_apk.ps1` im Projekt-Root ausfuehren - das Skript
-nutzt automatisch das offizielle `kivy/buildozer`-Docker-Image (installiert
-bei Bedarf Docker Desktop per winget):
+Windows daher `build_apk.ps1` im Repository-Root ausfuehren (zwei Ebenen
+ueber diesem Ordner) - das Skript nutzt automatisch das offizielle
+`kivy/buildozer`-Docker-Image (installiert bei Bedarf Docker Desktop per
+winget):
 
 ```powershell
-.\build_apk.ps1
+..\..\build_apk.ps1
 ```
 
-Die fertige APK liegt danach unter `android_app\bin\*.apk`.
+Die fertige APK liegt danach unter `Picodesk\android_app\bin\*.apk`. Direkt
+auf ein per USB angeschlossenes Android-Geraet installieren:
+
+```powershell
+..\..\install_apk.ps1
+```
 
 ## Build (Linux/macOS, direkt mit Buildozer)
 
 ```bash
 pip install buildozer
-cd android_app
+cd Picodesk/android_app
 buildozer android debug
 ```
 

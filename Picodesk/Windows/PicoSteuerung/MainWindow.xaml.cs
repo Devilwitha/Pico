@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Linq;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
@@ -60,7 +61,7 @@ public partial class MainWindow : Window
     private DateTime _verlaufBasisZeit;
 
     // --- Update-Tab ---
-    private string? _updateDateiPfad;
+    private string[]? _updateDateiPfade;
 
     // --- Dateien-Tab ---
     private List<DateiEintrag> _dateien = new();
@@ -468,49 +469,96 @@ public partial class MainWindow : Window
 
     private void UpdateInfoAnzeigen(string text) => UpdateStatus.Text = text;
 
+    /// <summary>Wartet nach einem Neustart-ausloesenden Upload, bis der Pico
+    /// wieder antwortet (fuer Mehrfach-Uploads, bei denen nach einer .py-Datei
+    /// weitere Dateien folgen).</summary>
+    private async Task<bool> WarteBisOnlineAsync(int maxSekunden)
+    {
+        if (_client is null) return false;
+        for (var i = 0; i < maxSekunden; i++)
+        {
+            await Task.Delay(1000);
+            try { if (await _client.InfoAsync() is not null) return true; }
+            catch { /* Pico startet noch */ }
+        }
+        return false;
+    }
+
+    /// <summary>Sortiert .py-Dateien ans Ende: sie loesen nach der Uebernahme
+    /// einen Neustart aus, danach koennen weitere Dateien erst folgen,
+    /// nachdem der Pico wieder online ist.</summary>
+    private static string[] FuerUploadSortieren(IEnumerable<string> pfade) =>
+        pfade.OrderBy(p => p.EndsWith(".py", StringComparison.OrdinalIgnoreCase) ? 1 : 0).ToArray();
+
     private void UpdateDateiWaehlen_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFileDialog { Filter = "Update-Dateien (*.py;*.html)|*.py;*.html|Alle Dateien (*.*)|*.*" };
+        var dialog = new OpenFileDialog
+        {
+            Filter = "Update-Dateien (*.py;*.html)|*.py;*.html|Alle Dateien (*.*)|*.*",
+            Multiselect = true,
+        };
         if (dialog.ShowDialog() != true) return;
-        _updateDateiPfad = dialog.FileName;
-        UpdateDateiName.Text = System.IO.Path.GetFileName(dialog.FileName);
+        _updateDateiPfade = FuerUploadSortieren(dialog.FileNames);
+        UpdateDateiName.Text = _updateDateiPfade.Length == 1
+            ? System.IO.Path.GetFileName(_updateDateiPfade[0])
+            : $"{_updateDateiPfade.Length} Dateien gewaehlt";
         UpdateHochladenButton.IsEnabled = true;
     }
 
     private async void UpdateHochladen_Click(object sender, RoutedEventArgs e)
     {
-        if (_client is null || _updateDateiPfad is null) return;
-        var ziel = System.IO.Path.GetFileName(_updateDateiPfad);
-        var istPython = ziel.EndsWith(".py", StringComparison.OrdinalIgnoreCase);
-        var frage = $"\"{ziel}\" auf dem Pico speichern" + (istPython ? " und danach neu starten?" : "?");
+        if (_client is null || _updateDateiPfade is null || _updateDateiPfade.Length == 0) return;
+        var namen = _updateDateiPfade.Select(System.IO.Path.GetFileName).ToArray();
+        var enthaeltPython = namen.Any(n => n!.EndsWith(".py", StringComparison.OrdinalIgnoreCase));
+        var frage = namen.Length == 1
+            ? $"\"{namen[0]}\" auf dem Pico speichern" + (enthaeltPython ? " und danach neu starten?" : "?")
+            : $"{namen.Length} Dateien auf dem Pico speichern ({string.Join(", ", namen)})" +
+              (enthaeltPython ? " - dabei startet der Pico bei den .py-Dateien neu?" : "?");
         if (MessageBox.Show(frage, "Update hochladen", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
 
         UpdateHochladenButton.IsEnabled = false;
-        UpdateInfoAnzeigen("Lade hoch...");
-        try
+        var erfolge = 0;
+        for (var i = 0; i < _updateDateiPfade.Length; i++)
         {
-            var inhalt = await System.IO.File.ReadAllBytesAsync(_updateDateiPfad);
-            var antwort = await _client.UpdateAsync(ziel, inhalt);
-            if (antwort.Ok && antwort.Neustart)
+            var pfad = _updateDateiPfade[i];
+            var ziel = System.IO.Path.GetFileName(pfad);
+            var fortschritt = _updateDateiPfade.Length > 1 ? $"({i + 1}/{_updateDateiPfade.Length}) " : "";
+            UpdateInfoAnzeigen($"{fortschritt}Lade \"{ziel}\" hoch...");
+            try
             {
-                UpdateInfoAnzeigen("Update erfolgreich - Pico startet neu.");
+                var inhalt = await System.IO.File.ReadAllBytesAsync(pfad);
+                var antwort = await _client.UpdateAsync(ziel, inhalt);
+                if (antwort.Ok)
+                {
+                    erfolge++;
+                    if (antwort.Neustart)
+                    {
+                        UpdateInfoAnzeigen($"{fortschritt}\"{ziel}\" hochgeladen - Pico startet neu, warte...");
+                        await WarteBisOnlineAsync(20);
+                    }
+                }
+                else
+                {
+                    UpdateInfoAnzeigen($"{fortschritt}Fehler bei \"{ziel}\": {antwort.Fehler ?? "unbekannt"}");
+                }
             }
-            else if (antwort.Ok)
+            catch
             {
-                UpdateInfoAnzeigen(ziel + " aktualisiert - kein Neustart noetig.");
-                await SeiteAktualisierenAsync();
-            }
-            else
-            {
-                UpdateInfoAnzeigen("Fehler: " + (antwort.Fehler ?? "unbekannt"));
-                UpdateHochladenButton.IsEnabled = true;
+                UpdateInfoAnzeigen($"{fortschritt}\"{ziel}\": Verbindung getrennt - warte auf Neustart...");
+                await WarteBisOnlineAsync(20);
             }
         }
-        catch
+
+        UpdateHochladenButton.IsEnabled = true;
+        if (erfolge == _updateDateiPfade.Length)
         {
-            UpdateInfoAnzeigen("Verbindung getrennt - falls das Update angenommen wurde, startet der Pico gerade neu.");
-            UpdateHochladenButton.IsEnabled = true;
+            UpdateInfoAnzeigen(namen.Length == 1 ? "Update erfolgreich." : $"Alle {erfolge} Dateien erfolgreich hochgeladen.");
         }
+        else
+        {
+            UpdateInfoAnzeigen($"{erfolge}/{_updateDateiPfade.Length} Dateien erfolgreich hochgeladen, Rest fehlgeschlagen.");
+        }
+        await SeiteAktualisierenAsync();
     }
 
     private async void Neustart_Click(object sender, RoutedEventArgs e)
@@ -700,6 +748,61 @@ public partial class MainWindow : Window
     private void DateiNeu_Click(object sender, RoutedEventArgs e) => DateiEditorAnzeigen(null, "");
 
     private void DateiAbbrechen_Click(object sender, RoutedEventArgs e) => DateiEditorSchliessen();
+
+    private async void DateiHochladen_Click(object sender, RoutedEventArgs e)
+    {
+        if (_client is null) return;
+        var dialog = new OpenFileDialog { Filter = "Alle Dateien (*.*)|*.*", Multiselect = true };
+        if (dialog.ShowDialog() != true) return;
+        var pfade = FuerUploadSortieren(dialog.FileNames);
+
+        var namen = pfade.Select(System.IO.Path.GetFileName).ToArray();
+        var enthaeltPython = namen.Any(n => n!.EndsWith(".py", StringComparison.OrdinalIgnoreCase));
+        var frage = namen.Length == 1
+            ? $"\"{namen[0]}\" auf dem Pico speichern" + (enthaeltPython ? " und danach neu starten?" : "?")
+            : $"{namen.Length} Dateien auf dem Pico speichern ({string.Join(", ", namen)})" +
+              (enthaeltPython ? " - dabei startet der Pico bei den .py-Dateien neu?" : "?");
+        if (MessageBox.Show(frage, "Dateien hochladen", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
+
+        DateiHochladenButton.IsEnabled = false;
+        var erfolge = 0;
+        for (var i = 0; i < pfade.Length; i++)
+        {
+            var pfad = pfade[i];
+            var ziel = System.IO.Path.GetFileName(pfad);
+            var fortschritt = pfade.Length > 1 ? $"({i + 1}/{pfade.Length}) " : "";
+            DateiListeStatus.Text = $"{fortschritt}Lade \"{ziel}\" hoch...";
+            try
+            {
+                var inhalt = await System.IO.File.ReadAllBytesAsync(pfad);
+                var antwort = await _client.UpdateAsync(ziel, inhalt);
+                if (antwort.Ok)
+                {
+                    erfolge++;
+                    if (antwort.Neustart)
+                    {
+                        DateiListeStatus.Text = $"{fortschritt}\"{ziel}\" hochgeladen - Pico startet neu, warte...";
+                        await WarteBisOnlineAsync(20);
+                    }
+                }
+                else
+                {
+                    DateiListeStatus.Text = $"{fortschritt}Fehler bei \"{ziel}\": {antwort.Fehler ?? "unbekannt"}";
+                }
+            }
+            catch
+            {
+                DateiListeStatus.Text = $"{fortschritt}\"{ziel}\": Verbindung getrennt - warte auf Neustart...";
+                await WarteBisOnlineAsync(20);
+            }
+        }
+
+        DateiHochladenButton.IsEnabled = true;
+        DateiListeStatus.Text = erfolge == pfade.Length
+            ? (namen.Length == 1 ? $"\"{namen[0]}\" hochgeladen." : $"Alle {erfolge} Dateien erfolgreich hochgeladen.")
+            : $"{erfolge}/{pfade.Length} Dateien erfolgreich hochgeladen, Rest fehlgeschlagen.";
+        await DateienLadenAsync();
+    }
 
     private async Task DateiBearbeitenAsync(string name)
     {

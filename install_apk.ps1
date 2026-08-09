@@ -4,15 +4,16 @@
   einem per USB angeschlossenen Android-Geraet.
 
 .DESCRIPTION
-  Sucht die neueste APK unter android_app\bin (Ergebnis von build_apk.ps1),
-  findet adb (ueber PATH oder gaengige Android-SDK-Installationsorte) und
-  installiert die APK per "adb install -r" auf dem angeschlossenen Geraet.
-  Auf dem Geraet muss vorher USB-Debugging aktiviert und die Verbindung zu
-  diesem PC bestaetigt worden sein (Meldung "USB-Debugging zulassen?").
+  Sucht die neueste APK unter Picodesk\android_app\bin (Ergebnis von
+  build_apk.ps1), findet adb (ueber PATH oder gaengige Android-SDK-
+  Installationsorte) und installiert die APK per "adb install -r" auf dem
+  angeschlossenen Geraet. Auf dem Geraet muss vorher USB-Debugging aktiviert
+  und die Verbindung zu diesem PC bestaetigt worden sein (Meldung
+  "USB-Debugging zulassen?").
 
 .PARAMETER ApkPath
   Pfad zu einer bestimmten APK. Ohne Angabe wird automatisch die zuletzt
-  geaenderte *.apk unter android_app\bin verwendet.
+  geaenderte *.apk unter Picodesk\android_app\bin verwendet.
 
 .PARAMETER DeviceId
   Geraete-ID (aus "adb devices"), falls mehrere Geraete/Emulatoren
@@ -33,7 +34,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$AndroidAppDir = Join-Path $PSScriptRoot 'android_app'
+$AndroidAppDir = Join-Path $PSScriptRoot 'Picodesk\android_app'
 
 function Test-CommandExists {
     param([string]$Name)
@@ -42,21 +43,49 @@ function Test-CommandExists {
 
 Write-Host '== Pico-Steuerung: APK auf Android-Geraet installieren ==' -ForegroundColor Cyan
 
-# --- 1) adb finden -----------------------------------------------------------
-$adb = $null
-if (Test-CommandExists 'adb') {
-    $adb = 'adb'
-} else {
-    $kandidaten = @(
-        (Join-Path $env:LOCALAPPDATA 'Android\Sdk\platform-tools\adb.exe'),
-        (if ($env:ANDROID_HOME) { Join-Path $env:ANDROID_HOME 'platform-tools\adb.exe' }),
-        (if ($env:ANDROID_SDK_ROOT) { Join-Path $env:ANDROID_SDK_ROOT 'platform-tools\adb.exe' })
-    ) | Where-Object { $_ -and (Test-Path $_) }
+# --- 1) adb finden (und bei Bedarf per winget installieren) -----------------
+function Find-Adb {
+    if (Test-CommandExists 'adb') { return 'adb' }
+    $kandidaten = @((Join-Path $env:LOCALAPPDATA 'Android\Sdk\platform-tools\adb.exe'))
+    if ($env:ANDROID_HOME) { $kandidaten += Join-Path $env:ANDROID_HOME 'platform-tools\adb.exe' }
+    if ($env:ANDROID_SDK_ROOT) { $kandidaten += Join-Path $env:ANDROID_SDK_ROOT 'platform-tools\adb.exe' }
+    $kandidaten = $kandidaten | Where-Object { Test-Path $_ }
+    if ($kandidaten) { return $kandidaten[0] }
 
-    if ($kandidaten) {
-        $adb = $kandidaten[0]
+    # winget installiert Google.PlatformTools als "Portable"-Paket hierhin und
+    # traegt den Ordner in den PATH ein - allerdings sieht die *aktuelle*
+    # Sitzung diese PATH-Aenderung erst nach einem Neustart. Direkt nachsehen
+    # erspart den Neustart in den meisten Faellen.
+    $wingetTreffer = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages') `
+        -Filter 'adb.exe' -Recurse -Depth 3 -ErrorAction SilentlyContinue |
+        Select-Object -First 1 -ExpandProperty FullName
+    if ($wingetTreffer) { return $wingetTreffer }
+
+    return $null
+}
+
+$adb = Find-Adb
+if (-not $adb) {
+    Write-Host 'adb wurde nicht gefunden.' -ForegroundColor Yellow
+    if (Test-CommandExists 'winget') {
+        Write-Host 'Installiere Android SDK Platform-Tools per winget...' -ForegroundColor Yellow
+        winget install -e --id Google.PlatformTools --accept-package-agreements --accept-source-agreements
+        Write-Host ''
+
+        # Nach der Installation direkt erneut suchen (findet das winget-
+        # Portable-Paket meist auch ohne Neustart, siehe Find-Adb oben) -
+        # nur falls das fehlschlaegt, ist ein Neustart noetig (z.B. wenn
+        # winget stattdessen die "normalen" SDK Platform-Tools installiert hat).
+        $adb = Find-Adb
+        if (-not $adb) {
+            Write-Host 'Platform-Tools wurden installiert, adb aber noch nicht auffindbar.' -ForegroundColor Yellow
+            Write-Host 'Bitte dieses Fenster/Terminal (bzw. VS Code) neu starten, damit der PATH' -ForegroundColor Yellow
+            Write-Host 'aktualisiert wird, und dieses Skript danach erneut ausfuehren.' -ForegroundColor Yellow
+            exit 1
+        }
+        Write-Host 'adb gefunden.' -ForegroundColor Green
     } else {
-        Write-Error 'adb wurde nicht gefunden. Bitte Android SDK Platform-Tools installieren (https://developer.android.com/tools/releases/platform-tools) und sicherstellen, dass adb im PATH liegt oder ANDROID_HOME/ANDROID_SDK_ROOT gesetzt ist.'
+        Write-Error 'adb wurde nicht gefunden und winget ist nicht verfuegbar. Bitte Android SDK Platform-Tools manuell installieren: https://developer.android.com/tools/releases/platform-tools'
     }
 }
 Write-Host "Verwende adb: $adb" -ForegroundColor DarkGray
@@ -66,7 +95,7 @@ if (-not $ApkPath) {
     $apk = Get-ChildItem -Path (Join-Path $AndroidAppDir 'bin') -Filter '*.apk' -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if (-not $apk) {
-        Write-Error "Keine APK unter android_app\bin gefunden. Zuerst '.\build_apk.ps1' ausfuehren, oder -ApkPath angeben."
+        Write-Error "Keine APK unter Picodesk\android_app\bin gefunden. Zuerst '.\build_apk.ps1' ausfuehren, oder -ApkPath angeben."
     }
     $ApkPath = $apk.FullName
 }

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Baut die Android-APK der Pico-Steuerung-App (Ordner android_app/) unter Windows.
+  Baut die Android-APK der Pico-Steuerung-App (Ordner Picodesk/android_app/) unter Windows.
 
 .DESCRIPTION
   Buildozer (das Kivy-Android-Build-Tool) laeuft nur unter Linux/macOS. Dieses
@@ -26,7 +26,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$AndroidAppDir = Join-Path $PSScriptRoot 'android_app'
+$AndroidAppDir = Join-Path $PSScriptRoot 'Picodesk\android_app'
 $DockerImage = 'kivy/buildozer'
 
 function Test-CommandExists {
@@ -37,7 +37,7 @@ function Test-CommandExists {
 Write-Host '== Pico-Steuerung: Android-APK bauen ==' -ForegroundColor Cyan
 
 if (-not (Test-Path $AndroidAppDir)) {
-    Write-Error "Ordner 'android_app' wurde nicht gefunden unter: $AndroidAppDir"
+    Write-Error "Ordner 'Picodesk\android_app' wurde nicht gefunden unter: $AndroidAppDir"
 }
 
 # --- 1) Docker sicherstellen -------------------------------------------------
@@ -116,5 +116,5 @@ Write-Host ''
 if ($apk) {
     Write-Host "Fertig! APK liegt unter: $($apk.FullName)" -ForegroundColor Green
 } else {
-    Write-Host 'Build abgeschlossen, aber keine APK in android_app\bin gefunden - bitte Ausgabe oben pruefen.' -ForegroundColor Yellow
+    Write-Host 'Build abgeschlossen, aber keine APK in Picodesk\android_app\bin gefunden - bitte Ausgabe oben pruefen.' -ForegroundColor Yellow
 }

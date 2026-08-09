@@ -517,14 +517,14 @@
     </div>
     <div class="update-bereich">
       <label class="update-datei" for="updateDatei">
-        <span id="updateDateiName">Datei auswaehlen (.py oder .html)</span>
+        <span id="updateDateiName">Datei(en) auswaehlen (.py oder .html)</span>
       </label>
-      <input type="file" id="updateDatei" accept=".py,.html" hidden>
+      <input type="file" id="updateDatei" accept=".py,.html" multiple hidden>
       <div class="update-aktionen">
         <button type="button" class="update-btn" id="updateButton" disabled>Update hochladen</button>
         <button type="button" class="neustart-btn" id="neustartButton">Neustart</button>
       </div>
-      <div class="update-info" id="updateInfo">Die Datei wird unter ihrem eigenen Namen gespeichert - existiert schon eine gleichnamige Datei, wird nur diese ersetzt (Backup bleibt erhalten). .py-Dateien werden auf gueltiges Python geprueft und starten den Pico danach neu, andere Dateien (z.B. .html) sofort ohne Neustart.</div>
+      <div class="update-info" id="updateInfo">Jede Datei wird unter ihrem eigenen Namen gespeichert - existiert schon eine gleichnamige Datei, wird nur diese ersetzt (Backup bleibt erhalten). Mehrere Dateien werden nacheinander hochgeladen (.py-Dateien zuletzt, da sie den Pico neu starten). .py-Dateien werden vorher auf gueltiges Python geprueft.</div>
     </div>
 
     <div class="trenner"></div>
@@ -866,47 +866,87 @@
   }
 
   updateDatei.addEventListener('change', () => {
-    const datei = updateDatei.files[0];
-    if (datei) {
-      updateDateiName.textContent = datei.name;
+    const dateien = updateDatei.files;
+    if (dateien.length === 1) {
+      updateDateiName.textContent = dateien[0].name;
+      updateDateiLabel.classList.add('gewaehlt');
+      updateButton.disabled = false;
+    } else if (dateien.length > 1) {
+      updateDateiName.textContent = dateien.length + ' Dateien gewaehlt';
       updateDateiLabel.classList.add('gewaehlt');
       updateButton.disabled = false;
     } else {
-      updateDateiName.textContent = 'Datei auswaehlen (.py oder .html)';
+      updateDateiName.textContent = 'Datei(en) auswaehlen (.py oder .html)';
       updateDateiLabel.classList.remove('gewaehlt');
       updateButton.disabled = true;
     }
   });
 
+  // Wartet nach einem Neustart-ausloesenden Update, bis der Pico wieder
+  // antwortet, bevor die naechste Datei der Warteschlange hochgeladen wird.
+  async function warteBisOnline(maxSek) {
+    for (let i = 0; i < maxSek; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      try {
+        const res = await fetch('/info', { signal: AbortSignal.timeout(2000) });
+        if (res.ok) return true;
+      } catch (err) {
+        // Pico startet noch - naechster Versuch
+      }
+    }
+    return false;
+  }
+
   updateButton.addEventListener('click', async () => {
-    const datei = updateDatei.files[0];
-    if (!datei) return;
-    // Die Datei behaelt ihren eigenen Namen: existiert er schon auf dem
-    // Pico, wird nur diese eine Datei ersetzt - sonst wird sie neu angelegt.
-    const ziel = datei.name;
-    const istPython = ziel.toLowerCase().endsWith('.py');
-    if (!confirm('"' + ziel + '" auf dem Pico speichern' + (istPython ? ' und danach neu starten?' : '?'))) return;
+    const dateien = Array.from(updateDatei.files);
+    if (!dateien.length) return;
+    // .py-Dateien ans Ende der Warteschlange sortieren: sie starten den Pico
+    // neu, danach koennen weitere Dateien erst nach dem Neustart folgen.
+    dateien.sort((a, b) => Number(a.name.toLowerCase().endsWith('.py')) - Number(b.name.toLowerCase().endsWith('.py')));
+
+    const namen = dateien.map(d => d.name).join(', ');
+    const enthaeltPython = dateien.some(d => d.name.toLowerCase().endsWith('.py'));
+    const frage = dateien.length === 1
+      ? '"' + namen + '" auf dem Pico speichern' + (enthaeltPython ? ' und danach neu starten?' : '?')
+      : dateien.length + ' Dateien auf dem Pico speichern (' + namen + ')' + (enthaeltPython ? ' - dabei startet der Pico bei den .py-Dateien neu?' : '?');
+    if (!confirm(frage)) return;
 
     updateButton.disabled = true;
     neustartButton.disabled = true;
-    updateInfoAnzeigen('Lade hoch...');
-    try {
-      const inhalt = await datei.arrayBuffer();
-      const res = await fetch('/update?ziel=' + encodeURIComponent(ziel), { method: 'POST', body: inhalt });
-      const data = await res.json();
-      if (data.ok && data.neustart) {
-        updateInfoAnzeigen('Update erfolgreich - Pico startet neu. Seite in ca. 10s neu laden.', 'ok');
-        setTimeout(() => location.reload(), 10000);
-      } else if (data.ok) {
-        updateInfoAnzeigen(ziel + ' aktualisiert - kein Neustart noetig. Seite wird neu geladen.', 'ok');
-        setTimeout(() => location.reload(), 1500);
-      } else {
-        updateInfoAnzeigen('Fehler: ' + (data.fehler || 'unbekannt'), 'fehler');
-        updateButton.disabled = false;
-        neustartButton.disabled = false;
+
+    let erfolge = 0;
+    for (let i = 0; i < dateien.length; i++) {
+      const datei = dateien[i];
+      const fortschritt = dateien.length > 1 ? '(' + (i + 1) + '/' + dateien.length + ') ' : '';
+      updateInfoAnzeigen(fortschritt + 'Lade "' + datei.name + '" hoch...');
+      try {
+        const inhalt = await datei.arrayBuffer();
+        const res = await fetch('/update?ziel=' + encodeURIComponent(datei.name), { method: 'POST', body: inhalt });
+        const data = await res.json();
+        if (data.ok) {
+          erfolge++;
+          if (data.neustart) {
+            updateInfoAnzeigen(fortschritt + '"' + datei.name + '" hochgeladen - Pico startet neu, warte...');
+            await warteBisOnline(20);
+          }
+        } else {
+          updateInfoAnzeigen(fortschritt + 'Fehler bei "' + datei.name + '": ' + (data.fehler || 'unbekannt'), 'fehler');
+        }
+      } catch (err) {
+        updateInfoAnzeigen(fortschritt + '"' + datei.name + '": Verbindung getrennt - warte auf Neustart...', 'fehler');
+        await warteBisOnline(20);
       }
-    } catch (err) {
-      updateInfoAnzeigen('Verbindung getrennt - falls das Update angenommen wurde, startet der Pico gerade neu.', 'fehler');
+    }
+
+    if (erfolge === dateien.length) {
+      updateInfoAnzeigen(dateien.length === 1 ? 'Update erfolgreich. Seite wird neu geladen.' : 'Alle ' + erfolge + ' Dateien erfolgreich hochgeladen. Seite wird neu geladen.', 'ok');
+      setTimeout(() => location.reload(), 1500);
+    } else if (erfolge > 0) {
+      updateInfoAnzeigen(erfolge + '/' + dateien.length + ' Dateien erfolgreich hochgeladen, Rest fehlgeschlagen. Seite wird neu geladen.', 'fehler');
+      setTimeout(() => location.reload(), 2500);
+    } else {
+      updateInfoAnzeigen('Keine Datei erfolgreich hochgeladen - siehe Meldung oben.', 'fehler');
+      updateButton.disabled = false;
       neustartButton.disabled = false;
     }
   });

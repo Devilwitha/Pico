@@ -13,6 +13,7 @@ zurueckgegeben.
 
 import os
 import threading
+import time
 
 from kivy.animation import Animation
 from kivy.app import App
@@ -90,6 +91,13 @@ def format_groesse(bytes_):
     if bytes_ < 1024:
         return "{} B".format(bytes_)
     return "{:.1f} KB".format(bytes_ / 1024)
+
+
+def fuer_upload_sortieren(pfade):
+    """.py-Dateien ans Ende: sie loesen nach der Uebernahme einen Neustart
+    aus, danach koennen weitere Dateien erst folgen, sobald der Pico wieder
+    online ist (siehe App.dateien_hochladen)."""
+    return sorted(pfade, key=lambda p: p.lower().endswith(".py"))
 
 
 # Dateien, die sich ueber die Dateiverwaltung nicht loeschen lassen (siehe
@@ -692,64 +700,59 @@ class SteuerungScreen(Screen):
         karte.add_widget(neustart_btn)
 
         self.update_status = dim_label(
-            "Die Datei wird unter ihrem eigenen Namen gespeichert. .py-Dateien "
-            "werden geprueft und starten den Pico danach neu."
+            "Dateien werden unter ihrem eigenen Namen gespeichert. Mehrere "
+            "Dateien werden nacheinander hochgeladen (.py-Dateien zuletzt, da "
+            "sie den Pico neu starten und danach geprueft werden)."
         )
         karte.add_widget(self.update_status)
 
-        self._update_datei_pfad = None
+        self._update_datei_pfade = []
         return karte
 
     def _update_datei_waehlen(self, *_args):
         from plyer import filechooser
-        filechooser.open_file(on_selection=self._update_datei_gewaehlt, multiple=False)
+        filechooser.open_file(on_selection=self._update_datei_gewaehlt, multiple=True)
 
     @mainthread
     def _update_datei_gewaehlt(self, auswahl):
         if not auswahl:
             return
-        self._update_datei_pfad = auswahl[0]
-        self.update_datei_label.text = os.path.basename(self._update_datei_pfad)
+        self._update_datei_pfade = fuer_upload_sortieren(auswahl)
+        self.update_datei_label.text = (
+            os.path.basename(self._update_datei_pfade[0]) if len(self._update_datei_pfade) == 1
+            else "{} Dateien gewaehlt".format(len(self._update_datei_pfade)))
         self.update_hochladen_btn.disabled = False
 
     def _update_hochladen(self, *_args):
-        if not self._update_datei_pfad:
+        if not self._update_datei_pfade:
             return
-        ziel = os.path.basename(self._update_datei_pfad)
-        ist_python = ziel.lower().endswith(".py")
-        text = '"{}" auf dem Pico speichern{}'.format(
-            ziel, " und danach neu starten?" if ist_python else "?")
-        frage_bestaetigen("Update hochladen", text, lambda: self._update_tatsaechlich_hochladen(ziel))
-
-    def _update_tatsaechlich_hochladen(self, ziel):
-        self.update_hochladen_btn.disabled = True
-        self.update_status.text = "Lade hoch..."
-        self.update_status.color = FARBE_DIM
-        pfad = self._update_datei_pfad
-
-        try:
-            with open(pfad, "rb") as f:
-                inhalt = f.read()
-        except OSError as exc:
-            self._update_ergebnis(False, str(exc))
-            return
-
-        def callback(erfolg, ergebnis):
-            self._update_ergebnis(erfolg, ergebnis)
-
-        App.get_running_app().datei_speichern(ziel, inhalt, callback)
-
-    def _update_ergebnis(self, erfolg, ergebnis):
-        self.update_hochladen_btn.disabled = False
-        if erfolg and ergebnis.get("ok"):
-            self.update_status.text = ("Update erfolgreich - Pico startet neu." if ergebnis.get("neustart")
-                                        else "Aktualisiert - kein Neustart noetig.")
-            self.update_status.color = FARBE_GRUEN
-        elif erfolg:
-            self.update_status.text = "Fehler: " + (ergebnis.get("fehler") or "unbekannt")
-            self.update_status.color = FARBE_ROT
+        namen = [os.path.basename(p) for p in self._update_datei_pfade]
+        enthaelt_python = any(n.lower().endswith(".py") for n in namen)
+        if len(namen) == 1:
+            text = '"{}" auf dem Pico speichern{}'.format(
+                namen[0], " und danach neu starten?" if enthaelt_python else "?")
         else:
-            self.update_status.text = "Verbindungsfehler: " + str(ergebnis)
+            text = "{} Dateien auf dem Pico speichern ({}){}".format(
+                len(namen), ", ".join(namen),
+                " - dabei startet der Pico bei den .py-Dateien neu?" if enthaelt_python else "?")
+        frage_bestaetigen("Update hochladen", text, self._update_tatsaechlich_hochladen)
+
+    def _update_tatsaechlich_hochladen(self):
+        self.update_hochladen_btn.disabled = True
+        App.get_running_app().dateien_hochladen(
+            self._update_datei_pfade, self._update_fortschritt, self._update_fertig)
+
+    def _update_fortschritt(self, text):
+        self.update_status.text = text
+        self.update_status.color = FARBE_DIM
+
+    def _update_fertig(self, erfolge, gesamt):
+        self.update_hochladen_btn.disabled = False
+        if erfolge == gesamt:
+            self.update_status.text = "Update erfolgreich." if gesamt == 1 else "Alle {} Dateien erfolgreich hochgeladen.".format(erfolge)
+            self.update_status.color = FARBE_GRUEN
+        else:
+            self.update_status.text = "{}/{} Dateien erfolgreich hochgeladen, Rest fehlgeschlagen.".format(erfolge, gesamt)
             self.update_status.color = FARBE_ROT
 
     def _neustart_bestaetigen(self, *_args):
@@ -1044,9 +1047,12 @@ class DateienScreen(Screen):
             cursor_color=FARBE_AKZENT,
         )
         self.suche_input.bind(text=lambda *_a: self._liste_rendern())
-        neu_btn = AktionsButton(text="+ Neu", size_hint_x=None, width=dp(84), height=dp(44))
+        hochladen_btn = AktionsButton(text="Hochladen", size_hint_x=None, width=dp(96), height=dp(44))
+        hochladen_btn.bind(on_release=self._hochladen_datei_waehlen)
+        neu_btn = AktionsButton(text="+ Neu", size_hint_x=None, width=dp(72), height=dp(44))
         neu_btn.bind(on_release=lambda *_a: self._editor_oeffnen(None, ""))
         werkzeuge.add_widget(self.suche_input)
+        werkzeuge.add_widget(hochladen_btn)
         werkzeuge.add_widget(neu_btn)
         karte.add_widget(werkzeuge)
 
@@ -1170,6 +1176,44 @@ class DateienScreen(Screen):
                 self.liste_status.color = FARBE_ROT
 
         app.dateien_liste(callback)
+
+    # --- Hochladen (mehrere Dateien vom Geraet) ------------------------------
+
+    def _hochladen_datei_waehlen(self, *_args):
+        from plyer import filechooser
+        filechooser.open_file(on_selection=self._hochladen_datei_gewaehlt, multiple=True)
+
+    @mainthread
+    def _hochladen_datei_gewaehlt(self, auswahl):
+        if not auswahl:
+            return
+        pfade = fuer_upload_sortieren(auswahl)
+        namen = [os.path.basename(p) for p in pfade]
+        enthaelt_python = any(n.lower().endswith(".py") for n in namen)
+        if len(namen) == 1:
+            text = '"{}" auf dem Pico speichern{}'.format(
+                namen[0], " und danach neu starten?" if enthaelt_python else "?")
+        else:
+            text = "{} Dateien auf dem Pico speichern ({}){}".format(
+                len(namen), ", ".join(namen),
+                " - dabei startet der Pico bei den .py-Dateien neu?" if enthaelt_python else "?")
+        frage_bestaetigen("Dateien hochladen", text, lambda: self._hochladen_tatsaechlich(pfade))
+
+    def _hochladen_tatsaechlich(self, pfade):
+        App.get_running_app().dateien_hochladen(pfade, self._hochladen_fortschritt, self._hochladen_fertig)
+
+    def _hochladen_fortschritt(self, text):
+        self.liste_status.text = text
+        self.liste_status.color = FARBE_DIM
+
+    def _hochladen_fertig(self, erfolge, gesamt):
+        if erfolge == gesamt:
+            self.liste_status.text = "Datei hochgeladen." if gesamt == 1 else "Alle {} Dateien erfolgreich hochgeladen.".format(erfolge)
+            self.liste_status.color = FARBE_GRUEN
+        else:
+            self.liste_status.text = "{}/{} Dateien erfolgreich hochgeladen, Rest fehlgeschlagen.".format(erfolge, gesamt)
+            self.liste_status.color = FARBE_ROT
+        self.aktualisieren()
 
     # --- Editor ---------------------------------------------------------------
 
@@ -1596,9 +1640,10 @@ class PicoSteuerungApp(App):
         threading.Thread(target=arbeit, daemon=True).start()
 
     def datei_speichern(self, ziel, inhalt_bytes, callback):
-        """Speichert eine Datei unter ihrem eigenen Namen (identischer
-        /update-Mechanismus wie ein main.py/index.html-Update) - genutzt vom
-        Dateien-Editor (Speichern) und der Update-Karte (Datei-Upload)."""
+        """Speichert eine einzelne Datei unter ihrem eigenen Namen
+        (identischer /update-Mechanismus wie ein main.py/index.html-Update) -
+        genutzt vom Dateien-Editor (Speichern). Fuer mehrere Dateien auf
+        einmal siehe dateien_hochladen()."""
         client = self.client
         if not client:
             Clock.schedule_once(lambda _dt: callback(False, "Nicht mit dem Pico verbunden"))
@@ -1611,6 +1656,59 @@ class PicoSteuerungApp(App):
             except PicoFehler as exc:
                 fehler = str(exc)
                 Clock.schedule_once(lambda _dt: callback(False, fehler))
+
+        threading.Thread(target=arbeit, daemon=True).start()
+
+    def dateien_hochladen(self, pfade, fortschritt_callback, fertig_callback):
+        """Laedt mehrere lokale Dateien nacheinander auf den Pico hoch (siehe
+        fuer_upload_sortieren() - .py-Dateien zuletzt, da sie einen Neustart
+        ausloesen). fortschritt_callback(text) informiert laufend ueber den
+        Stand, fertig_callback(erfolge, gesamt) wird einmal am Ende
+        aufgerufen. Laeuft komplett in einem einzigen Hintergrund-Thread
+        (statt pro Datei einen eigenen), damit die Reihenfolge und die
+        Wartezeit nach einem Neustart sauber eingehalten werden."""
+        client = self.client
+        gesamt = len(pfade)
+        if not client:
+            Clock.schedule_once(lambda _dt: fortschritt_callback("Nicht mit dem Pico verbunden"))
+            Clock.schedule_once(lambda _dt: fertig_callback(0, gesamt))
+            return
+
+        def warte_bis_online(max_sek=20):
+            for _ in range(max_sek):
+                time.sleep(1)
+                try:
+                    if client.info() is not None:
+                        return True
+                except PicoFehler:
+                    pass
+            return False
+
+        def arbeit():
+            erfolge = 0
+            for i, pfad in enumerate(pfade):
+                ziel = os.path.basename(pfad)
+                praefix = "({}/{}) ".format(i + 1, gesamt) if gesamt > 1 else ""
+                Clock.schedule_once(lambda _dt, z=ziel, p=praefix: fortschritt_callback('{}Lade "{}" hoch...'.format(p, z)))
+                try:
+                    with open(pfad, "rb") as f:
+                        inhalt = f.read()
+                    ergebnis = client.update_hochladen(ziel, inhalt)
+                except (OSError, PicoFehler):
+                    Clock.schedule_once(lambda _dt, z=ziel, p=praefix: fortschritt_callback('{}"{}": Verbindung getrennt - warte...'.format(p, z)))
+                    warte_bis_online()
+                    continue
+
+                if ergebnis.get("ok"):
+                    erfolge += 1
+                    if ergebnis.get("neustart"):
+                        Clock.schedule_once(lambda _dt, z=ziel, p=praefix: fortschritt_callback('{}"{}" hochgeladen - Pico startet neu, warte...'.format(p, z)))
+                        warte_bis_online()
+                else:
+                    fehler = ergebnis.get("fehler", "unbekannt")
+                    Clock.schedule_once(lambda _dt, z=ziel, p=praefix, f=fehler: fortschritt_callback('{}Fehler bei "{}": {}'.format(p, z, f)))
+
+            Clock.schedule_once(lambda _dt: fertig_callback(erfolge, gesamt))
 
         threading.Thread(target=arbeit, daemon=True).start()
 

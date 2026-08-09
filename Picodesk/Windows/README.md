@@ -9,13 +9,27 @@ im Netz.
 
 | Tab | Entspricht | Funktionen |
 |---|---|---|
-| Steuerung | `index.html` | Auf/Ab (Halten), Stehen/Sitzen (Impuls), Automatik, Bewegungserkennung, Verlauf, Datei-Update |
-| Einstellungen | `einstellungen.html` | WLAN-Zugangsdaten anzeigen/aendern |
-| Dateien | `dateien.html` | Dateien auf dem Pico suchen, bearbeiten, anlegen, loeschen |
+| Steuerung | `index.html` | Auf/Ab (Halten), Stehen/Sitzen (Impuls), Position setzen, Automatik, Bewegungserkennung, Verlauf, Update-Upload |
+| Einstellungen | `einstellungen.html` | Geraetename anzeigen/aendern, WLAN-Zugangsdaten anzeigen/aendern |
+| Dateien | `dateien.html` | Dateien auf dem Pico suchen, bearbeiten, anlegen, loeschen, hochladen |
 
 Die App spricht dieselben HTTP-Endpunkte an wie die Weboberflaeche (siehe
 `main.py`, Abschnitt `anfrage_bearbeiten()`) - es ist also keine Aenderung
 am Pico noetig.
+
+Sowohl im Update-Bereich (Steuerung) als auch im Dateien-Tab lassen sich per
+"Dateien waehlen..."/"Hochladen" mehrere Dateien auf einmal auswaehlen - sie
+werden nacheinander hochgeladen (`.py`-Dateien zuletzt, da sie den Pico neu
+starten; die App wartet danach automatisch, bis er wieder erreichbar ist,
+bevor die naechste Datei folgt).
+
+### Geraetename
+
+Der auf der Einstellungen-Seite vergebene Anzeigename (siehe `/name/speichern`
+in `main.py`) wird prominent in der Verbindungsleiste sowie im Fenstertitel
+angezeigt und in der Ergebnisliste von "Automatisch suchen" verwendet -
+hilfreich, um bei mehreren Picos im Netz eindeutig zu erkennen, mit welchem
+Geraet man gerade verbunden ist.
 
 ### Automatische Verbindung
 
@@ -27,13 +41,21 @@ Android-App und verbindet sich automatisch mit dem ersten antwortenden
 Pico - funktioniert sowohl im normalen WLAN als auch im Recovery-Hotspot
 des Picos. Alternativ laesst sich Host/IP auch manuell eingeben.
 
+### Icon & Splash-Screen
+
+Die `.exe` nutzt dasselbe Icon wie die Android-App (`android_app/icon.png`,
+als Mehrgroessen-`.ico` unter `PicoSteuerung/Resources/icon.ico`) und zeigt
+beim Start kurz denselben Splash-Screen wie die Android-App
+(`PicoSteuerung/Resources/splash.png`).
+
 ## Bauen
 
 Benoetigt das [.NET 8 SDK](https://dotnet.microsoft.com/download) (oder
-neuer).
+neuer). Das Build-Skript liegt im Repository-Root (zwei Ebenen ueber diesem
+Ordner):
 
 ```powershell
-.\build_exe.ps1
+..\..\build_exe.ps1
 ```
 
 Erstellt eine eigenstaendige `PicoSteuerung.exe` unter

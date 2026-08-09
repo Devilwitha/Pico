@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Baut die Pico-Steuerung-Windows-App (Windows\PicoSteuerung) als
+  Baut die Pico-Steuerung-Windows-App (Picodesk\Windows\PicoSteuerung) als
   eigenstaendige .exe.
 
 .DESCRIPTION
@@ -25,8 +25,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$ProjektPfad = Join-Path $PSScriptRoot 'PicoSteuerung\PicoSteuerung.csproj'
-$AusgabePfad = Join-Path $PSScriptRoot 'PicoSteuerung\publish'
+$ProjektPfad = Join-Path $PSScriptRoot 'Picodesk\Windows\PicoSteuerung\PicoSteuerung.csproj'
+$AusgabePfad = Join-Path $PSScriptRoot 'Picodesk\Windows\PicoSteuerung\publish'
 
 function Test-CommandExists {
     param([string]$Name)

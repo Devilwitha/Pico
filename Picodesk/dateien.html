@@ -213,6 +213,8 @@
     <div id="ansichtListe">
       <div class="werkzeuge">
         <input type="text" id="sucheInput" placeholder="Datei suchen...">
+        <button type="button" class="neu-btn" id="hochladenButton">Hochladen</button>
+        <input type="file" id="hochladenDatei" multiple hidden>
         <button type="button" class="neu-btn" id="neuButton">+ Neu</button>
       </div>
       <ul class="datei-liste" id="dateiListe">
@@ -242,6 +244,8 @@
   const ansichtEditor = document.getElementById('ansichtEditor');
   const sucheInput = document.getElementById('sucheInput');
   const neuButton = document.getElementById('neuButton');
+  const hochladenButton = document.getElementById('hochladenButton');
+  const hochladenDatei = document.getElementById('hochladenDatei');
   const dateiListe = document.getElementById('dateiListe');
   const listeStatus = document.getElementById('listeStatus');
   const dateinameInput = document.getElementById('dateinameInput');
@@ -322,6 +326,76 @@
 
   neuButton.addEventListener('click', () => {
     editorAnzeigen(null, '');
+  });
+
+  // Wartet nach einem Neustart-ausloesenden Upload, bis der Pico wieder
+  // antwortet, bevor die naechste Datei der Warteschlange hochgeladen wird.
+  async function warteBisOnline(maxSek) {
+    for (let i = 0; i < maxSek; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      try {
+        const res = await fetch('/info', { signal: AbortSignal.timeout(2000) });
+        if (res.ok) return true;
+      } catch (err) {
+        // Pico startet noch - naechster Versuch
+      }
+    }
+    return false;
+  }
+
+  hochladenButton.addEventListener('click', () => hochladenDatei.click());
+
+  hochladenDatei.addEventListener('change', async () => {
+    const ausgewaehlt = Array.from(hochladenDatei.files);
+    hochladenDatei.value = '';
+    if (!ausgewaehlt.length) return;
+    // .py-Dateien ans Ende der Warteschlange sortieren: sie starten den Pico
+    // neu, danach koennen weitere Dateien erst nach dem Neustart folgen.
+    ausgewaehlt.sort((a, b) => Number(a.name.toLowerCase().endsWith('.py')) - Number(b.name.toLowerCase().endsWith('.py')));
+
+    const namen = ausgewaehlt.map(d => d.name).join(', ');
+    const enthaeltPython = ausgewaehlt.some(d => d.name.toLowerCase().endsWith('.py'));
+    const frage = ausgewaehlt.length === 1
+      ? '"' + namen + '" auf dem Pico speichern' + (enthaeltPython ? ' und danach neu starten?' : '?')
+      : ausgewaehlt.length + ' Dateien auf dem Pico speichern (' + namen + ')' + (enthaeltPython ? ' - dabei startet der Pico bei den .py-Dateien neu?' : '?');
+    if (!confirm(frage)) return;
+
+    hochladenButton.disabled = true;
+    neuButton.disabled = true;
+
+    let erfolge = 0;
+    for (let i = 0; i < ausgewaehlt.length; i++) {
+      const datei = ausgewaehlt[i];
+      const fortschritt = ausgewaehlt.length > 1 ? '(' + (i + 1) + '/' + ausgewaehlt.length + ') ' : '';
+      zeigeStatus(listeStatus, fortschritt + 'Lade "' + datei.name + '" hoch...');
+      try {
+        const inhalt = await datei.arrayBuffer();
+        const res = await fetch('/update?ziel=' + encodeURIComponent(datei.name), { method: 'POST', body: inhalt });
+        const daten = await res.json();
+        if (daten.ok) {
+          erfolge++;
+          if (daten.neustart) {
+            zeigeStatus(listeStatus, fortschritt + '"' + datei.name + '" hochgeladen - Pico startet neu, warte...');
+            await warteBisOnline(20);
+          }
+        } else {
+          zeigeStatus(listeStatus, fortschritt + 'Fehler bei "' + datei.name + '": ' + (daten.fehler || 'unbekannt'), 'fehler');
+        }
+      } catch (err) {
+        zeigeStatus(listeStatus, fortschritt + '"' + datei.name + '": Verbindung getrennt - warte auf Neustart...', 'fehler');
+        await warteBisOnline(20);
+      }
+    }
+
+    hochladenButton.disabled = false;
+    neuButton.disabled = false;
+
+    if (erfolge === ausgewaehlt.length) {
+      zeigeStatus(listeStatus, ausgewaehlt.length === 1 ? '"' + namen + '" hochgeladen.' : 'Alle ' + erfolge + ' Dateien erfolgreich hochgeladen.', 'ok');
+    } else if (erfolge > 0) {
+      zeigeStatus(listeStatus, erfolge + '/' + ausgewaehlt.length + ' Dateien erfolgreich hochgeladen, Rest fehlgeschlagen.', 'fehler');
+    }
+    dateienLaden();
   });
 
   abbrechenButton.addEventListener('click', () => {
