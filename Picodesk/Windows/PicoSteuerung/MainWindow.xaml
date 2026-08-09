@@ -1,7 +1,7 @@
 <Window x:Class="PicoSteuerung.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Pico Steuerung" Height="700" Width="1040" MinHeight="560" MinWidth="860"
+        Title="Pico Steuerung" Height="900" Width="1140" MinHeight="560" MinWidth="860"
         Background="{StaticResource HintergrundBrush}"
         FontFamily="Segoe UI"
         Loaded="MainWindow_Loaded"
