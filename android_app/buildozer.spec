@@ -9,12 +9,17 @@ source.include_exts = py
 
 version = 1.0.0
 
-requirements = python3,kivy==2.3.0,pyjnius
+requirements = python3,kivy==2.3.0,pyjnius,plyer
 
 orientation = portrait
 fullscreen = 0
 
 icon.filename = %(source.dir)s/icon.png
+
+# Splash-Screen (kurz beim Start sichtbar, waehrend Python/Kivy hochfaehrt) -
+# dasselbe Logo wie im Splash-Screen der Windows-App
+presplash.filename = %(source.dir)s/presplash.png
+android.presplash_color = #0b1120
 
 # WiFi-Vorschlag (WifiNetworkSuggestion), Discovery per UDP-Broadcast und
 # HTTP-Zugriff auf den Pico im lokalen Netz/Hotspot benoetigen diese

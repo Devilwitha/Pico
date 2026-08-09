@@ -55,6 +55,16 @@
   }
   .nav-zeile a:hover { color: var(--text); }
   .nav-zeile .trennpunkt { margin: 0 6px; color: var(--text-dim); }
+  .trenner {
+    height: 1px;
+    background: var(--card-border);
+    margin: 22px 0 20px;
+  }
+  .abschnitt-titel {
+    font-weight: 600;
+    font-size: 15px;
+    margin-bottom: 14px;
+  }
   .hinweis {
     border-radius: 14px;
     padding: 14px;
@@ -123,10 +133,24 @@
 </head>
 <body>
   <div class="karte">
-    <h1>WLAN-Einstellungen</h1>
+    <h1>Einstellungen</h1>
     <div class="nav-zeile" id="navZeile">
       <a href="/index.html">&larr; Zur Steuerung</a><span class="trennpunkt">&middot;</span><a href="/dateien.html">Dateien</a>
     </div>
+
+    <div class="abschnitt-titel">Geraetename</div>
+    <form id="nameForm">
+      <div class="feld">
+        <label for="nameInput">Anzeigename (zur eindeutigen Erkennung bei mehreren Picos)</label>
+        <input type="text" id="nameInput" autocomplete="off" required placeholder="z.B. Schreibtisch Buero">
+      </div>
+      <button type="submit" id="nameSpeichernButton">Namen speichern</button>
+    </form>
+    <div class="status" id="nameStatus"></div>
+
+    <div class="trenner"></div>
+
+    <div class="abschnitt-titel">WLAN</div>
     <div class="hinweis" id="hinweis">Lade Status...</div>
 
     <form id="wlanForm">
@@ -153,11 +177,62 @@
   const speichernButton = document.getElementById('speichernButton');
   const statusEl = document.getElementById('status');
   const infoZeile = document.getElementById('infoZeile');
+  const nameForm = document.getElementById('nameForm');
+  const nameInput = document.getElementById('nameInput');
+  const nameSpeichernButton = document.getElementById('nameSpeichernButton');
+  const nameStatusEl = document.getElementById('nameStatus');
 
   function zeigeStatus(text, art) {
     statusEl.className = art ? ('status ' + art) : 'status';
     statusEl.textContent = text;
   }
+
+  function zeigeNameStatus(text, art) {
+    nameStatusEl.className = art ? ('status ' + art) : 'status';
+    nameStatusEl.textContent = text;
+  }
+
+  // Aktuellen Anzeigenamen laden (auch fuer den Browser-Tab-Titel, damit bei
+  // mehreren offenen Picos sofort erkennbar ist, welcher Tab zu welchem Pico gehoert)
+  async function nameLaden() {
+    try {
+      const res = await fetch('/info');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      if (data.name) {
+        nameInput.value = data.name;
+        document.title = data.name + ' – Einstellungen';
+      }
+    } catch (err) {
+      // Name wird beim Absenden des Formulars ohnehin serverseitig geprueft
+    }
+  }
+
+  nameForm.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const name = nameInput.value.trim();
+    if (!name) return;
+
+    nameSpeichernButton.disabled = true;
+    zeigeNameStatus('Speichere...');
+    try {
+      const res = await fetch('/name/speichern', {
+        method: 'POST',
+        body: JSON.stringify({ name: name }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        zeigeNameStatus('Gespeichert.', 'ok');
+        document.title = data.name + ' – Einstellungen';
+      } else {
+        zeigeNameStatus('Fehler: ' + (data.fehler || 'unbekannt'), 'fehler');
+      }
+    } catch (err) {
+      zeigeNameStatus('Verbindungsfehler', 'fehler');
+    } finally {
+      nameSpeichernButton.disabled = false;
+    }
+  });
 
   async function statusLaden() {
     try {
@@ -214,6 +289,7 @@
   });
 
   statusLaden();
+  nameLaden();
 </script>
 </body>
 </html>

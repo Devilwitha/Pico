@@ -99,6 +99,18 @@
     70%  { box-shadow: 0 0 0 8px rgba(74,222,128,0); }
     100% { box-shadow: 0 0 0 0 rgba(74,222,128,0); }
   }
+  .geraet-name {
+    display: block;
+    text-align: center;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--accent);
+    text-decoration: none;
+    margin-bottom: 6px;
+    letter-spacing: 0.2px;
+  }
+  .geraet-name:hover { text-decoration: underline; }
+  .geraet-name:empty { display: none; }
   .info-zeile {
     text-align: center;
     font-size: 11.5px;
@@ -413,6 +425,7 @@
       <span class="live-punkt" id="livePunkt"></span>
       <h1>Pico Steuerung</h1>
     </div>
+    <a class="geraet-name" id="geraetName" href="/einstellungen.html" title="Geraetenamen aendern"></a>
     <div class="info-zeile" id="infoZeile">Verbinde...</div>
     <div class="status" id="status">Bereit</div>
     <div class="grid">
@@ -747,6 +760,7 @@
   const infoZeile = document.getElementById('infoZeile');
   const livePunkt = document.getElementById('livePunkt');
   const versionAnzeige = document.getElementById('versionAnzeige');
+  const geraetNameEl = document.getElementById('geraetName');
 
   function formatDauer(sek) {
     sek = Math.max(0, Math.floor(sek));
@@ -780,6 +794,10 @@
       infoZeileRendern();
       livePunkt.className = 'live-punkt online';
       if (data.version) versionAnzeige.textContent = 'v' + data.version;
+      if (data.name) {
+        geraetNameEl.textContent = data.name;
+        document.title = data.name + ' – Pico Steuerung';
+      }
     } catch (err) {
       infoVerbunden = false;
       infoZeile.textContent = 'Keine Verbindung zum Pico';

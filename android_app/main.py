@@ -1,12 +1,14 @@
 """Pico Steuerung - Android-App (Kivy)
 
-Spiegelt die Weboberflaeche des Pico (index.html/einstellungen.html) nativ:
-Steuerung (Auf/Ab/Stehen/Sitzen), Automatik, Bewegungserkennung, Verlauf und
-WLAN-Einstellungen. Findet den Pico automatisch per UDP-Discovery (siehe
-discovery.py, Gegenstueck zum Discovery-Responder in main.py auf dem Pico) -
-unabhaengig davon, ob er im normalen WLAN oder im eigenen Recovery-Hotspot
-laeuft. Alle Netzwerkaufrufe laufen in Hintergrund-Threads, Ergebnisse
-werden per @mainthread sicher an die UI zurueckgegeben.
+Spiegelt die Weboberflaeche des Pico (index.html/einstellungen.html/
+dateien.html) nativ: Steuerung (Auf/Ab/Stehen/Sitzen, Position setzen),
+Automatik, Bewegungserkennung, Verlauf, Geraetename, WLAN-Einstellungen,
+Dateiverwaltung und Update-Upload. Findet den Pico automatisch per
+UDP-Discovery (siehe discovery.py, Gegenstueck zum Discovery-Responder in
+main.py auf dem Pico) - unabhaengig davon, ob er im normalen WLAN oder im
+eigenen Recovery-Hotspot laeuft. Alle Netzwerkaufrufe laufen in
+Hintergrund-Threads, Ergebnisse werden per @mainthread sicher an die UI
+zurueckgegeben.
 """
 
 import os
@@ -25,6 +27,7 @@ from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.gridlayout import GridLayout
 from kivy.uix.label import Label
+from kivy.uix.popup import Popup
 from kivy.uix.screenmanager import NoTransition, Screen, ScreenManager
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.textinput import TextInput
@@ -53,6 +56,7 @@ ANWESENHEIT_TICK_SEK = 1
 
 VERLAUF_LABEL = {
     "auf": "Auf", "ab": "Ab", "stehen": "Stehen", "sitzen": "Sitzen",
+    "stehen_setzen": "Stehposition gesetzt", "sitzen_setzen": "Sitzposition gesetzt",
     "automatik_ein": "Automatik gestartet", "automatik_aus": "Automatik gestoppt",
 }
 VERLAUF_BADGE = {"automatik": "Automatik", "sensor": "Sensor"}
@@ -62,6 +66,7 @@ VERLAUF_BADGE = {"automatik": "Automatik", "sensor": "Sensor"}
 # dargestellt - das war die Ursache der fehlerhaften Darstellung.
 VERLAUF_ICON = {
     "auf": u"▲", "ab": u"▼", "stehen": "St", "sitzen": "Si",
+    "stehen_setzen": "St*", "sitzen_setzen": "Si*",
     "automatik_ein": u"▶", "automatik_aus": u"■",
 }
 
@@ -79,6 +84,17 @@ def format_vor(sek):
     if minuten < 60:
         return "vor {}m".format(minuten)
     return "vor {}h".format(minuten // 60)
+
+
+def format_groesse(bytes_):
+    if bytes_ < 1024:
+        return "{} B".format(bytes_)
+    return "{:.1f} KB".format(bytes_ / 1024)
+
+
+# Dateien, die sich ueber die Dateiverwaltung nicht loeschen lassen (siehe
+# DATEIEN_GESCHUETZT in main.py auf dem Pico)
+DATEIEN_GESCHUETZT = ("main.py", "boot.py")
 
 
 def anwesenheit_phase_text(anwesenheit):
@@ -215,6 +231,32 @@ class MenuIcon(Widget):
         for i, linie in enumerate(self._balken):
             yy = y + h - i * (h / 2)
             linie.points = [x, yy, x + w, yy]
+
+
+class OrdnerIcon(Widget):
+    """Einfaches Ordner-Symbol als Vektor-Grafik fuer den Dateien-Knopf in
+    der Kopfleiste (siehe PfeilIcon/MenuIcon - keine Emojis/Sonderzeichen,
+    die auf manchen Geraeten/Schriftarten als leeres Kaestchen erscheinen)."""
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("size_hint", (None, None))
+        kwargs.setdefault("size", (dp(20), dp(16)))
+        super().__init__(**kwargs)
+        with self.canvas:
+            Color(*FARBE_TEXT)
+            self._koerper = Line(width=dp(1.6), joint="miter")
+            self._lasche = Line(width=dp(1.6), joint="miter")
+        self.bind(pos=self._update, size=self._update)
+
+    def _update(self, *_args):
+        x, y = self.pos
+        w, h = self.size
+        lasche_h = h * 0.28
+        lasche_w = w * 0.5
+        self._lasche.points = [x, y + h, x, y + h - lasche_h, x + lasche_w * 0.6, y + h - lasche_h, x + lasche_w, y + h]
+        self._koerper.points = [
+            x, y + h - lasche_h, x, y, x + w, y, x + w, y + h - lasche_h * 0.3, x + lasche_w, y + h - lasche_h * 0.3,
+        ]
 
 
 class IconKnopf(ButtonBehavior, AnchorLayout):
@@ -419,6 +461,33 @@ def feld_mit_label(beschriftung, feld):
     return box
 
 
+def frage_bestaetigen(titel, text, ja_callback):
+    """Einfacher Ja/Nein-Dialog, wie confirm() im Web-UI bzw. MessageBox in
+    der Windows-App (z.B. vor dem Loeschen einer Datei oder dem Hochladen
+    eines Updates)."""
+    inhalt = BoxLayout(orientation="vertical", spacing=dp(12), padding=dp(12))
+    inhalt.add_widget(Label(text=text, color=FARBE_TEXT, font_size="13.5sp"))
+    knopf_reihe = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
+    inhalt.add_widget(knopf_reihe)
+
+    popup = Popup(title=titel, content=inhalt, size_hint=(0.85, None), height=dp(160),
+                   background_color=FARBE_LEISTE, separator_color=FARBE_RAND,
+                   title_color=FARBE_TEXT)
+
+    ja_btn = AktionsButton(text="Ja", height=dp(44))
+    nein_btn = AktionsButton(text="Abbrechen", height=dp(44))
+
+    def _ja(*_args):
+        popup.dismiss()
+        ja_callback()
+
+    ja_btn.bind(on_release=_ja)
+    nein_btn.bind(on_release=lambda *_: popup.dismiss())
+    knopf_reihe.add_widget(nein_btn)
+    knopf_reihe.add_widget(ja_btn)
+    popup.open()
+
+
 # --- Steuerung-Bildschirm ----------------------------------------------------
 
 class SteuerungScreen(Screen):
@@ -430,18 +499,26 @@ class SteuerungScreen(Screen):
         self.inhalt = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(16), size_hint_y=None)
         self.inhalt.bind(minimum_height=self.inhalt.setter("height"))
 
+        self.geraet_name_label = Label(text="", color=FARBE_AKZENT, bold=True, font_size="14sp",
+                                        size_hint_y=None, height=dp(0))
+        self.inhalt.add_widget(self.geraet_name_label)
         self.status_label = dim_label("Verbinde...")
         self.inhalt.add_widget(self.status_label)
         self.inhalt.add_widget(self._buttons_karte())
         self.inhalt.add_widget(self._automatik_karte())
         self.inhalt.add_widget(self._bewegung_karte())
         self.inhalt.add_widget(self._verlauf_karte())
+        self.inhalt.add_widget(self._update_karte())
 
         wurzel.add_widget(self.inhalt)
         self.add_widget(wurzel)
 
     def status_setzen(self, text):
         self.status_label.text = text
+
+    def geraet_name_setzen(self, name):
+        self.geraet_name_label.text = name or ""
+        self.geraet_name_label.height = dp(20) if name else dp(0)
 
     def _buttons_karte(self):
         karte = Karte()
@@ -468,6 +545,18 @@ class SteuerungScreen(Screen):
         for btn in (auf_btn, ab_btn, stehen_btn, sitzen_btn):
             gitter.add_widget(btn)
         karte.add_widget(gitter)
+
+        setzen_gitter = GridLayout(cols=2, spacing=dp(10), size_hint_y=None, height=dp(44))
+        stehen_setzen_btn = AktionsButton(text="Stehposition setzen", height=dp(44))
+        sitzen_setzen_btn = AktionsButton(text="Sitzposition setzen", height=dp(44))
+        stehen_setzen_btn.text_label.font_size = "12sp"
+        sitzen_setzen_btn.text_label.font_size = "12sp"
+        stehen_setzen_btn.bind(on_release=lambda *_: app().aktion_senden("stehen_setzen"))
+        sitzen_setzen_btn.bind(on_release=lambda *_: app().aktion_senden("sitzen_setzen"))
+        setzen_gitter.add_widget(stehen_setzen_btn)
+        setzen_gitter.add_widget(sitzen_setzen_btn)
+        karte.add_widget(setzen_gitter)
+
         return karte
 
     def _automatik_karte(self):
@@ -579,8 +668,101 @@ class SteuerungScreen(Screen):
         zeile.add_widget(zeit_label)
         return zeile
 
+    def _update_karte(self):
+        karte = Karte()
+        kopf = BoxLayout(size_hint_y=None, height=dp(28))
+        kopf.add_widget(titel_label("Update"))
+        karte.add_widget(kopf)
+
+        self.update_datei_label = dim_label("Keine Datei gewaehlt")
+        karte.add_widget(self.update_datei_label)
+
+        reihe = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
+        waehlen_btn = AktionsButton(text="Datei waehlen...", height=dp(48))
+        waehlen_btn.bind(on_release=self._update_datei_waehlen)
+        self.update_hochladen_btn = AktionsButton(text="Hochladen", height=dp(48))
+        self.update_hochladen_btn.disabled = True
+        self.update_hochladen_btn.bind(on_release=self._update_hochladen)
+        reihe.add_widget(waehlen_btn)
+        reihe.add_widget(self.update_hochladen_btn)
+        karte.add_widget(reihe)
+
+        neustart_btn = AktionsButton(text="Pico neu starten", height=dp(44))
+        neustart_btn.bind(on_release=self._neustart_bestaetigen)
+        karte.add_widget(neustart_btn)
+
+        self.update_status = dim_label(
+            "Die Datei wird unter ihrem eigenen Namen gespeichert. .py-Dateien "
+            "werden geprueft und starten den Pico danach neu."
+        )
+        karte.add_widget(self.update_status)
+
+        self._update_datei_pfad = None
+        return karte
+
+    def _update_datei_waehlen(self, *_args):
+        from plyer import filechooser
+        filechooser.open_file(on_selection=self._update_datei_gewaehlt, multiple=False)
+
+    @mainthread
+    def _update_datei_gewaehlt(self, auswahl):
+        if not auswahl:
+            return
+        self._update_datei_pfad = auswahl[0]
+        self.update_datei_label.text = os.path.basename(self._update_datei_pfad)
+        self.update_hochladen_btn.disabled = False
+
+    def _update_hochladen(self, *_args):
+        if not self._update_datei_pfad:
+            return
+        ziel = os.path.basename(self._update_datei_pfad)
+        ist_python = ziel.lower().endswith(".py")
+        text = '"{}" auf dem Pico speichern{}'.format(
+            ziel, " und danach neu starten?" if ist_python else "?")
+        frage_bestaetigen("Update hochladen", text, lambda: self._update_tatsaechlich_hochladen(ziel))
+
+    def _update_tatsaechlich_hochladen(self, ziel):
+        self.update_hochladen_btn.disabled = True
+        self.update_status.text = "Lade hoch..."
+        self.update_status.color = FARBE_DIM
+        pfad = self._update_datei_pfad
+
+        try:
+            with open(pfad, "rb") as f:
+                inhalt = f.read()
+        except OSError as exc:
+            self._update_ergebnis(False, str(exc))
+            return
+
+        def callback(erfolg, ergebnis):
+            self._update_ergebnis(erfolg, ergebnis)
+
+        App.get_running_app().datei_speichern(ziel, inhalt, callback)
+
+    def _update_ergebnis(self, erfolg, ergebnis):
+        self.update_hochladen_btn.disabled = False
+        if erfolg and ergebnis.get("ok"):
+            self.update_status.text = ("Update erfolgreich - Pico startet neu." if ergebnis.get("neustart")
+                                        else "Aktualisiert - kein Neustart noetig.")
+            self.update_status.color = FARBE_GRUEN
+        elif erfolg:
+            self.update_status.text = "Fehler: " + (ergebnis.get("fehler") or "unbekannt")
+            self.update_status.color = FARBE_ROT
+        else:
+            self.update_status.text = "Verbindungsfehler: " + str(ergebnis)
+            self.update_status.color = FARBE_ROT
+
+    def _neustart_bestaetigen(self, *_args):
+        frage_bestaetigen("Neustart", "Pico jetzt neu starten?", self._neustart_ausfuehren)
+
+    def _neustart_ausfuehren(self):
+        self.update_status.text = "Neustart..."
+        self.update_status.color = FARBE_DIM
+        App.get_running_app().neustart_anfordern()
+
     def daten_anzeigen(self, info, verlauf, automatik, anwesenheit):
         ip = info.get("ip") or "?"
+        self.geraet_name_setzen(info.get("name"))
         self.status_setzen("Verbunden: {} (v{})".format(ip, info.get("version", "?")))
 
         self._sperre = True
@@ -629,6 +811,7 @@ class EinstellungenScreen(Screen):
         self.inhalt = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(16), size_hint_y=None)
         self.inhalt.bind(minimum_height=self.inhalt.setter("height"))
 
+        self.inhalt.add_widget(self._geraetename_karte())
         self.inhalt.add_widget(self._verbindung_karte())
         self.inhalt.add_widget(self._wlan_karte())
         if wifi_android.IST_ANDROID:
@@ -636,6 +819,51 @@ class EinstellungenScreen(Screen):
 
         wurzel.add_widget(self.inhalt)
         self.add_widget(wurzel)
+
+    def _geraetename_karte(self):
+        karte = Karte()
+        karte.add_widget(titel_label("Geraetename"))
+        karte.add_widget(dim_label("Zur eindeutigen Erkennung bei mehreren Picos"))
+
+        self.name_input = TextInput(
+            text="", hint_text="z.B. Schreibtisch Buero", multiline=False,
+            foreground_color=FARBE_TEXT, background_color=(1, 1, 1, 0.08),
+            cursor_color=FARBE_AKZENT, size_hint_y=None, height=dp(40),
+        )
+        karte.add_widget(self.name_input)
+
+        speichern_btn = AktionsButton(text="Namen speichern", height=dp(44))
+        speichern_btn.bind(on_release=self._name_speichern)
+        karte.add_widget(speichern_btn)
+
+        self.name_speichern_status = dim_label("")
+        karte.add_widget(self.name_speichern_status)
+        return karte
+
+    def _name_speichern(self, *_args):
+        app = App.get_running_app()
+        if not app.client:
+            self.name_speichern_status.text = "Nicht mit dem Pico verbunden"
+            self.name_speichern_status.color = FARBE_ROT
+            return
+        name = self.name_input.text.strip()
+        if not name:
+            self.name_speichern_status.text = "Name darf nicht leer sein"
+            self.name_speichern_status.color = FARBE_ROT
+            return
+
+        self.name_speichern_status.text = "Speichere..."
+        self.name_speichern_status.color = FARBE_DIM
+
+        def callback(erfolg, fehler):
+            if erfolg:
+                self.name_speichern_status.text = "Gespeichert."
+                self.name_speichern_status.color = FARBE_GRUEN
+            else:
+                self.name_speichern_status.text = "Fehler: " + fehler
+                self.name_speichern_status.color = FARBE_ROT
+
+        app.name_speichern(name, callback)
 
     def _verbindung_karte(self):
         karte = Karte()
@@ -752,6 +980,9 @@ class EinstellungenScreen(Screen):
             self.verbindung_status.text = "Nicht verbunden"
             self.verbindung_status.color = FARBE_ROT
 
+        if not self.name_input.text and app.letzte_info.get("name"):
+            self.name_input.text = app.letzte_info["name"]
+
         if not app.client:
             return
 
@@ -780,6 +1011,251 @@ class EinstellungenScreen(Screen):
             self.ssid_input.text = ssid
 
 
+# --- Dateien-Bildschirm -------------------------------------------------------
+
+class DateienScreen(Screen):
+    """Dateien auf dem Pico suchen, bearbeiten, anlegen und loeschen - siehe
+    dateien.html im Web-UI. Speichern/Anlegen laeuft ueber denselben
+    /update-Mechanismus wie die Update-Karte auf dem Steuerung-Bildschirm."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.dateien = []
+        self.bearbeitete_datei = None  # None = es wird eine neue Datei angelegt
+
+        self.unter_sm = ScreenManager(transition=NoTransition())
+        self.unter_sm.add_widget(self._liste_screen())
+        self.unter_sm.add_widget(self._editor_screen())
+        self.add_widget(self.unter_sm)
+
+    def _liste_screen(self):
+        screen = Screen(name="liste")
+        wurzel = ScrollView()
+        inhalt = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(16), size_hint_y=None)
+        inhalt.bind(minimum_height=inhalt.setter("height"))
+
+        karte = Karte()
+        karte.add_widget(titel_label("Dateien"))
+
+        werkzeuge = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
+        self.suche_input = TextInput(
+            text="", hint_text="Datei suchen...", multiline=False,
+            foreground_color=FARBE_TEXT, background_color=(1, 1, 1, 0.08),
+            cursor_color=FARBE_AKZENT,
+        )
+        self.suche_input.bind(text=lambda *_a: self._liste_rendern())
+        neu_btn = AktionsButton(text="+ Neu", size_hint_x=None, width=dp(84), height=dp(44))
+        neu_btn.bind(on_release=lambda *_a: self._editor_oeffnen(None, ""))
+        werkzeuge.add_widget(self.suche_input)
+        werkzeuge.add_widget(neu_btn)
+        karte.add_widget(werkzeuge)
+
+        self.dateien_box = BoxLayout(orientation="vertical", spacing=dp(10), size_hint_y=None)
+        self.dateien_box.bind(minimum_height=self.dateien_box.setter("height"))
+        karte.add_widget(self.dateien_box)
+
+        self.liste_status = dim_label("Lade Dateien...")
+        karte.add_widget(self.liste_status)
+
+        inhalt.add_widget(karte)
+        wurzel.add_widget(inhalt)
+        screen.add_widget(wurzel)
+        return screen
+
+    def _editor_screen(self):
+        screen = Screen(name="editor")
+        wurzel = ScrollView()
+        inhalt = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(12), size_hint_y=None)
+        inhalt.bind(minimum_height=inhalt.setter("height"))
+
+        karte = Karte()
+        karte.add_widget(titel_label("Datei bearbeiten"))
+
+        self.dateiname_input = TextInput(
+            text="", hint_text="Dateiname", multiline=False,
+            foreground_color=FARBE_TEXT, background_color=(1, 1, 1, 0.08),
+            cursor_color=FARBE_AKZENT, size_hint_y=None, height=dp(40),
+        )
+        karte.add_widget(self.dateiname_input)
+
+        self.editor_inhalt_input = TextInput(
+            text="", multiline=True,
+            foreground_color=FARBE_TEXT, background_color=(1, 1, 1, 0.06),
+            cursor_color=FARBE_AKZENT, size_hint_y=None, height=dp(320),
+        )
+        karte.add_widget(self.editor_inhalt_input)
+
+        aktionen = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
+        speichern_btn = AktionsButton(text="Speichern", height=dp(48))
+        speichern_btn.bind(on_release=self._speichern)
+        abbrechen_btn = AktionsButton(text="Abbrechen", height=dp(48))
+        abbrechen_btn.bind(on_release=lambda *_a: self._editor_schliessen())
+        aktionen.add_widget(speichern_btn)
+        aktionen.add_widget(abbrechen_btn)
+        karte.add_widget(aktionen)
+
+        self.editor_status = dim_label("")
+        karte.add_widget(self.editor_status)
+
+        inhalt.add_widget(karte)
+        wurzel.add_widget(inhalt)
+        screen.add_widget(wurzel)
+        return screen
+
+    # --- Liste --------------------------------------------------------------
+
+    def _datei_zeile(self, eintrag):
+        geschuetzt = eintrag["name"] in DATEIEN_GESCHUETZT
+        zeile = BoxLayout(orientation="vertical", spacing=dp(6), size_hint_y=None, height=dp(82),
+                           padding=(0, 0, 0, dp(8)))
+        with zeile.canvas.before:
+            Color(*FARBE_RAND)
+            trenn_linie = Line(width=1)
+
+        def _linie_update(inst, *_a, linie=trenn_linie):
+            linie.points = [inst.x, inst.y, inst.x + inst.width, inst.y]
+
+        zeile.bind(pos=_linie_update, size=_linie_update)
+
+        info_zeile = BoxLayout(size_hint_y=None, height=dp(22))
+        name_label = Label(text=eintrag["name"], color=FARBE_TEXT, font_size="13.5sp",
+                            halign="left", valign="middle", shorten=True)
+        name_label.bind(size=name_label.setter("text_size"))
+        groesse_label = Label(text=format_groesse(eintrag["groesse"]), color=FARBE_DIM,
+                               font_size="11sp", size_hint_x=None, width=dp(70),
+                               halign="right", valign="middle")
+        groesse_label.bind(size=groesse_label.setter("text_size"))
+        info_zeile.add_widget(name_label)
+        info_zeile.add_widget(groesse_label)
+        zeile.add_widget(info_zeile)
+
+        aktionen = BoxLayout(size_hint_y=None, height=dp(38), spacing=dp(8))
+        bearbeiten_btn = AktionsButton(text="Bearbeiten", height=dp(38))
+        bearbeiten_btn.bind(on_release=lambda *_a, n=eintrag["name"]: self._datei_bearbeiten(n))
+        aktionen.add_widget(bearbeiten_btn)
+        if not geschuetzt:
+            loeschen_btn = AktionsButton(text="Loeschen", height=dp(38))
+            loeschen_btn.bind(on_release=lambda *_a, n=eintrag["name"]: self._datei_loeschen_bestaetigen(n))
+            aktionen.add_widget(loeschen_btn)
+        zeile.add_widget(aktionen)
+        return zeile
+
+    def _liste_rendern(self):
+        filter_text = self.suche_input.text.strip().lower()
+        gefiltert = [d for d in self.dateien if filter_text in d["name"].lower()]
+        self.dateien_box.clear_widgets()
+        if not gefiltert:
+            self.dateien_box.add_widget(
+                dim_label("Keine Treffer" if self.dateien else "Keine Dateien gefunden"))
+            return
+        for eintrag in gefiltert:
+            self.dateien_box.add_widget(self._datei_zeile(eintrag))
+
+    def aktualisieren(self):
+        app = App.get_running_app()
+        if not app.client:
+            self.liste_status.text = "Nicht mit dem Pico verbunden"
+            self.liste_status.color = FARBE_ROT
+            return
+        self.liste_status.text = "Lade..."
+        self.liste_status.color = FARBE_DIM
+
+        def callback(erfolg, ergebnis):
+            if erfolg:
+                self.dateien = ergebnis
+                self._liste_rendern()
+                self.liste_status.text = ""
+            else:
+                self.liste_status.text = "Fehler: " + ergebnis
+                self.liste_status.color = FARBE_ROT
+
+        app.dateien_liste(callback)
+
+    # --- Editor ---------------------------------------------------------------
+
+    def _editor_oeffnen(self, name, inhalt):
+        self.bearbeitete_datei = name
+        self.dateiname_input.text = name or ""
+        self.dateiname_input.disabled = name is not None
+        self.editor_inhalt_input.text = inhalt or ""
+        self.editor_status.text = ""
+        self.unter_sm.current = "editor"
+
+    def _editor_schliessen(self):
+        self.unter_sm.current = "liste"
+        self.bearbeitete_datei = None
+        self.dateiname_input.disabled = False
+
+    def _datei_bearbeiten(self, name):
+        self.liste_status.text = 'Lade "{}"...'.format(name)
+        self.liste_status.color = FARBE_DIM
+
+        def callback(erfolg, ergebnis):
+            if erfolg:
+                self.liste_status.text = ""
+                self._editor_oeffnen(name, ergebnis)
+            else:
+                self.liste_status.text = "Fehler: " + ergebnis
+                self.liste_status.color = FARBE_ROT
+
+        App.get_running_app().datei_lesen(name, callback)
+
+    def _datei_loeschen_bestaetigen(self, name):
+        frage_bestaetigen("Datei loeschen", '"{}" wirklich loeschen?'.format(name),
+                           lambda: self._datei_loeschen(name))
+
+    def _datei_loeschen(self, name):
+        self.liste_status.text = "Loesche..."
+        self.liste_status.color = FARBE_DIM
+
+        def callback(erfolg, ergebnis):
+            if erfolg and ergebnis.get("ok", True):
+                self.liste_status.text = '"{}" geloescht'.format(name)
+                self.liste_status.color = FARBE_GRUEN
+                self.aktualisieren()
+            else:
+                fehler = ergebnis if isinstance(ergebnis, str) else ergebnis.get("fehler", "unbekannt")
+                self.liste_status.text = "Fehler: " + fehler
+                self.liste_status.color = FARBE_ROT
+
+        App.get_running_app().datei_loeschen(name, callback)
+
+    def _speichern(self, *_args):
+        name = self.bearbeitete_datei or self.dateiname_input.text.strip()
+        if not name:
+            self.editor_status.text = "Bitte einen Dateinamen eingeben"
+            self.editor_status.color = FARBE_ROT
+            return
+        inhalt = self.editor_inhalt_input.text
+        if not inhalt.strip():
+            self.editor_status.text = "Datei darf nicht leer sein"
+            self.editor_status.color = FARBE_ROT
+            return
+
+        ist_python = name.lower().endswith(".py")
+        text = '"{}" speichern{}'.format(name, " und Pico danach neu starten?" if ist_python else "?")
+        frage_bestaetigen("Datei speichern", text, lambda: self._tatsaechlich_speichern(name, inhalt))
+
+    def _tatsaechlich_speichern(self, name, inhalt):
+        self.editor_status.text = "Speichere..."
+        self.editor_status.color = FARBE_DIM
+
+        def callback(erfolg, ergebnis):
+            if erfolg and ergebnis.get("ok"):
+                self.editor_status.text = "Gespeichert - Pico startet neu." if ergebnis.get("neustart") else "Gespeichert."
+                self.editor_status.color = FARBE_GRUEN
+                self._editor_schliessen()
+                self.aktualisieren()
+            elif erfolg:
+                self.editor_status.text = "Fehler: " + (ergebnis.get("fehler") or "unbekannt")
+                self.editor_status.color = FARBE_ROT
+            else:
+                self.editor_status.text = "Fehler: " + ergebnis
+                self.editor_status.color = FARBE_ROT
+
+        App.get_running_app().datei_speichern(name, inhalt.encode("utf-8"), callback)
+
+
 # --- App ----------------------------------------------------------------------
 
 class PicoSteuerungApp(App):
@@ -788,6 +1264,7 @@ class PicoSteuerungApp(App):
         self.client = None
         self.verbunden = False
         self._anwesenheit_aktiv = False
+        self.letzte_info = {}
         self.speicher = JsonStore(os.path.join(self.user_data_dir, "pico_app.json"))
 
         Window.clearcolor = FARBE_BG
@@ -796,8 +1273,10 @@ class PicoSteuerungApp(App):
         self.sm = ScreenManager(transition=NoTransition())
         self.steuerung_screen = SteuerungScreen(name="steuerung")
         self.einstellungen_screen = EinstellungenScreen(name="einstellungen")
+        self.dateien_screen = DateienScreen(name="dateien")
         self.sm.add_widget(self.steuerung_screen)
         self.sm.add_widget(self.einstellungen_screen)
+        self.sm.add_widget(self.dateien_screen)
 
         wurzel = BoxLayout(orientation="vertical")
         wurzel.add_widget(self._kopfleiste())
@@ -828,9 +1307,14 @@ class PicoSteuerungApp(App):
         punkt_huelle.add_widget(self.verbindungspunkt)
         leiste.add_widget(punkt_huelle)
 
+        dateien_btn = IconKnopf()
+        dateien_btn.add_widget(OrdnerIcon())
+        dateien_btn.bind(on_release=lambda *_a: self._bildschirm_umschalten("dateien"))
+        leiste.add_widget(dateien_btn)
+
         einstellungen_btn = IconKnopf()
         einstellungen_btn.add_widget(MenuIcon())
-        einstellungen_btn.bind(on_release=self._bildschirm_umschalten)
+        einstellungen_btn.bind(on_release=lambda *_a: self._bildschirm_umschalten("einstellungen"))
         leiste.add_widget(einstellungen_btn)
         return leiste
 
@@ -839,10 +1323,12 @@ class PicoSteuerungApp(App):
         self._leiste_rect.size = instance.size
         self._leiste_linie.points = [instance.x, instance.y, instance.x + instance.width, instance.y]
 
-    def _bildschirm_umschalten(self, *_args):
-        self.sm.current = "einstellungen" if self.sm.current == "steuerung" else "steuerung"
+    def _bildschirm_umschalten(self, ziel):
+        self.sm.current = "steuerung" if self.sm.current == ziel else ziel
         if self.sm.current == "einstellungen":
             self.einstellungen_screen.aktualisieren()
+        elif self.sm.current == "dateien":
+            self.dateien_screen.aktualisieren()
 
     # --- Verbindung -----------------------------------------------------------
 
@@ -880,6 +1366,8 @@ class PicoSteuerungApp(App):
         self.steuerung_screen.status_setzen("Verbunden: " + ip)
         if self.sm.current == "einstellungen":
             self.einstellungen_screen.aktualisieren()
+        elif self.sm.current == "dateien":
+            self.dateien_screen.aktualisieren()
 
     @mainthread
     def _verbindung_verloren(self):
@@ -931,6 +1419,7 @@ class PicoSteuerungApp(App):
         self.verbunden = True
         self.verbindungspunkt.status_setzen("online")
         self._anwesenheit_aktiv = bool(anwesenheit.get("aktiv"))
+        self.letzte_info = info
         self.steuerung_screen.daten_anzeigen(info, verlauf, automatik, anwesenheit)
 
     # --- Schnelles Live-Update der Entfernungsmessung (jede Sekunde, siehe
@@ -1017,6 +1506,108 @@ class PicoSteuerungApp(App):
             try:
                 client.wlan_speichern(ssid, passwort)
                 Clock.schedule_once(lambda _dt: callback(True, ""))
+            except PicoFehler as exc:
+                fehler = str(exc)
+                Clock.schedule_once(lambda _dt: callback(False, fehler))
+
+        threading.Thread(target=arbeit, daemon=True).start()
+
+    # --- Geraetename ------------------------------------------------------
+
+    def name_speichern(self, name, callback):
+        client = self.client
+        if not client:
+            Clock.schedule_once(lambda _dt: callback(False, "Nicht mit dem Pico verbunden"))
+            return
+
+        def arbeit():
+            try:
+                client.name_speichern(name)
+                Clock.schedule_once(lambda _dt: callback(True, ""))
+            except PicoFehler as exc:
+                fehler = str(exc)
+                Clock.schedule_once(lambda _dt: callback(False, fehler))
+
+        threading.Thread(target=arbeit, daemon=True).start()
+
+    def neustart_anfordern(self):
+        client = self.client
+        if not client:
+            return
+
+        def arbeit():
+            try:
+                client.neustart()
+            except PicoFehler:
+                pass  # Verbindung bricht durch den Neustart erwartungsgemaess ab
+
+        threading.Thread(target=arbeit, daemon=True).start()
+
+    # --- Dateiverwaltung ----------------------------------------------------
+    # (fuer den Dateien-Bildschirm sowie die Update-Karte auf dem Steuerung-
+    # Bildschirm, die ebenfalls datei_speichern() fuer den Upload nutzt)
+
+    def dateien_liste(self, callback):
+        client = self.client
+        if not client:
+            Clock.schedule_once(lambda _dt: callback(False, "Nicht mit dem Pico verbunden"))
+            return
+
+        def arbeit():
+            try:
+                daten = client.dateien_liste()
+                Clock.schedule_once(lambda _dt: callback(True, daten))
+            except PicoFehler as exc:
+                fehler = str(exc)
+                Clock.schedule_once(lambda _dt: callback(False, fehler))
+
+        threading.Thread(target=arbeit, daemon=True).start()
+
+    def datei_lesen(self, name, callback):
+        client = self.client
+        if not client:
+            Clock.schedule_once(lambda _dt: callback(False, "Nicht mit dem Pico verbunden"))
+            return
+
+        def arbeit():
+            try:
+                inhalt = client.datei_lesen(name)
+                Clock.schedule_once(lambda _dt: callback(True, inhalt))
+            except PicoFehler as exc:
+                fehler = str(exc)
+                Clock.schedule_once(lambda _dt: callback(False, fehler))
+
+        threading.Thread(target=arbeit, daemon=True).start()
+
+    def datei_loeschen(self, name, callback):
+        client = self.client
+        if not client:
+            Clock.schedule_once(lambda _dt: callback(False, "Nicht mit dem Pico verbunden"))
+            return
+
+        def arbeit():
+            try:
+                ergebnis = client.datei_loeschen(name)
+                Clock.schedule_once(lambda _dt: callback(True, ergebnis))
+            except PicoFehler as exc:
+                fehler = str(exc)
+                Clock.schedule_once(lambda _dt: callback(False, fehler))
+
+        threading.Thread(target=arbeit, daemon=True).start()
+
+    def datei_speichern(self, ziel, inhalt_bytes, callback):
+        """Speichert eine Datei unter ihrem eigenen Namen (identischer
+        /update-Mechanismus wie ein main.py/index.html-Update) - genutzt vom
+        Dateien-Editor (Speichern) und der Update-Karte (Datei-Upload)."""
+        client = self.client
+        if not client:
+            Clock.schedule_once(lambda _dt: callback(False, "Nicht mit dem Pico verbunden"))
+            return
+
+        def arbeit():
+            try:
+                ergebnis = client.update_hochladen(ziel, inhalt_bytes)
+                Clock.schedule_once(lambda _dt: callback(True, ergebnis))
             except PicoFehler as exc:
                 fehler = str(exc)
                 Clock.schedule_once(lambda _dt: callback(False, fehler))

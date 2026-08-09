@@ -65,6 +65,12 @@ UPDATE_MAX_BYTES = 400_000
 # Geraet dann als "pult.tisch" erreichbar statt nur ueber die IP-Adresse.
 GERAETENAME = "pult"
 
+# Datei fuer den frei waehlbaren Anzeigenamen (siehe anzeigename_laden() unten) -
+# zusaetzlich zum technischen GERAETENAME, damit bei mehreren Picos im Netz im
+# Web bzw. in der Windows-App eindeutig erkennbar ist, mit welchem Geraet man
+# gerade verbunden ist (z.B. "Schreibtisch Buero" statt nur "pult").
+GERAETE_NAME_DATEI = "geraetename.txt"
+
 # GPIO-Pins fuer die vier Aktionen (an eigene Verkabelung anpassen)
 PIN_AUF = 13
 PIN_AB = 10
@@ -149,10 +155,36 @@ def verlauf_abfragen():
     ]
 
 
+def anzeigename_laden():
+    try:
+        with open(GERAETE_NAME_DATEI) as f:
+            name = f.read().strip()
+            return name if name else GERAETENAME
+    except OSError:
+        return GERAETENAME
+
+
+# Einmal beim Start laden und danach nur noch im RAM halten (statt bei jedem
+# /info-Aufruf erneut von der Platte zu lesen) - anzeigename_speichern()
+# haelt ANZEIGENAME und die Datei synchron.
+ANZEIGENAME = anzeigename_laden()
+
+
+def anzeigename_speichern(name):
+    global ANZEIGENAME
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("Name darf nicht leer sein")
+    with open(GERAETE_NAME_DATEI, "w") as f:
+        f.write(name)
+    ANZEIGENAME = name
+
+
 def geraeteinfo():
     return {
         "ip": wlan.ip,
         "hostname": GERAETENAME,
+        "name": ANZEIGENAME,
         "uptime_sek": int(time.time() - BOOT_ZEIT),
         "version": VERSION,
     }
@@ -454,6 +486,7 @@ def discovery_tick():
     antwort = json.dumps({
         "typ": "pico",
         "hostname": GERAETENAME,
+        "name": ANZEIGENAME,
         "ip": wlan.ip,
         "modus": wlan.modus,
         "version": VERSION,
@@ -594,6 +627,32 @@ def anfrage_bearbeiten(client):
                 client, lambda name: header_wert(kopf_text, name),
                 body_bereits_gelesen, http_antwort,
             )
+        elif methode == "POST" and pfad.startswith("/name/speichern"):
+            laenge_text = header_wert(kopf_text, "Content-Length")
+            laenge = int(laenge_text) if laenge_text and laenge_text.isdigit() else 0
+            if laenge <= 0 or laenge > 256:
+                http_antwort(
+                    client, "400 Bad Request",
+                    json.dumps({"ok": False, "fehler": "Ungueltige Anfrage"}),
+                    "application/json",
+                )
+            else:
+                daten_roh = body_bereits_gelesen
+                while len(daten_roh) < laenge:
+                    stueck = client.recv(min(1024, laenge - len(daten_roh)))
+                    if not stueck:
+                        break
+                    daten_roh += stueck
+                try:
+                    daten = json.loads(daten_roh)
+                    anzeigename_speichern(daten.get("name"))
+                    http_antwort(client, "200 OK", json.dumps({"ok": True, "name": ANZEIGENAME}), "application/json")
+                except (ValueError, OSError) as exc:
+                    http_antwort(
+                        client, "400 Bad Request",
+                        json.dumps({"ok": False, "fehler": str(exc)}),
+                        "application/json",
+                    )
         elif pfad.startswith("/wlan/status"):
             http_antwort(client, "200 OK", json.dumps(wlan.status()), "application/json")
         elif pfad.startswith("/neustart"):

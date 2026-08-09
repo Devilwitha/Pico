@@ -406,6 +406,12 @@
 
   sucheInput.addEventListener('input', dateiListeRendern);
 
+  // Tab-Titel auf den Geraetenamen setzen, damit bei mehreren offenen Picos
+  // sofort erkennbar ist, welcher Tab zu welchem Geraet gehoert
+  fetch('/info').then(r => r.json()).then(data => {
+    if (data.name) document.title = data.name + ' – Dateien';
+  }).catch(() => {});
+
   dateienLaden();
 </script>
 </body>
