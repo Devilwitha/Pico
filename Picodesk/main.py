@@ -52,7 +52,7 @@ from pico_tools import wlan, update
 # Konfiguration
 # ---------------------------------------------------------------------------
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 WLAN_SSID = "FRITZ!Box 5530 BA_2GEXT"
 WLAN_PASSWORT = "1234567890"
@@ -63,7 +63,7 @@ UPDATE_MAX_BYTES = 400_000
 # Geraetename, unter dem der Pico im lokalen Netz per DHCP angemeldet wird.
 # Der Router haengt die lokale Domain an (z.B. "tisch"), damit ist das
 # Geraet dann als "pult.tisch" erreichbar statt nur ueber die IP-Adresse.
-GERAETENAME = "pult"
+GERAETENAME = "Ultradesk_Pico_Mod"
 
 # Datei fuer den frei waehlbaren Anzeigenamen (siehe anzeigename_laden() unten) -
 # zusaetzlich zum technischen GERAETENAME, damit bei mehreren Picos im Netz im
