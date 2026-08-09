@@ -136,11 +136,41 @@ if ($DeviceId) {
 Write-Host "Zielgeraet: $zielId" -ForegroundColor Green
 
 # --- 4) Installieren ------------------------------------------------------------
+# Package-ID aus buildozer.spec (package.domain + "." + package.name) - falls
+# sich diese dort mal aendern, muss sie hier ebenfalls angepasst werden.
+$PackageId = 'org.picosteuerung.picosteuerung'
+
 Write-Host 'Installiere APK (bestehende Installation wird ersetzt)...' -ForegroundColor Cyan
-& $adb -s $zielId install -r $ApkPath
+$installAusgabe = & $adb -s $zielId install -r $ApkPath 2>&1
+$installAusgabe | ForEach-Object { Write-Host $_ }
 
 if ($LASTEXITCODE -ne 0) {
-    Write-Error 'Installation fehlgeschlagen - siehe Ausgabe oben.'
+    if ($installAusgabe -match 'INSTALL_FAILED_UPDATE_INCOMPATIBLE|signatures do not match') {
+        Write-Host ''
+        Write-Host "Auf dem Geraet ist bereits '$PackageId' installiert, signiert mit einem anderen Schluessel" -ForegroundColor Yellow
+        Write-Host '(z.B. von einem frueheren Build mit anderem Debug-Keystore) - Android verweigert deshalb' -ForegroundColor Yellow
+        Write-Host 'das Update. Bestehende Installation deinstallieren und neu installieren?' -ForegroundColor Yellow
+        Write-Host '(lokale Daten der App auf dem Geraet gehen dabei verloren - hier nur der zuletzt' -ForegroundColor Yellow
+        Write-Host 'verbundene Pico, wird beim naechsten Start automatisch neu gesucht)' -ForegroundColor Yellow
+        $antwort = Read-Host 'Fortfahren? (j/N)'
+        if ($antwort -notmatch '^[jJ]') {
+            Write-Error 'Installation abgebrochen.'
+        }
+
+        Write-Host "Deinstalliere $PackageId..." -ForegroundColor Cyan
+        & $adb -s $zielId uninstall $PackageId
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error 'Deinstallation fehlgeschlagen - siehe Ausgabe oben.'
+        }
+
+        Write-Host 'Installiere APK erneut...' -ForegroundColor Cyan
+        & $adb -s $zielId install $ApkPath
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error 'Installation fehlgeschlagen - siehe Ausgabe oben.'
+        }
+    } else {
+        Write-Error 'Installation fehlgeschlagen - siehe Ausgabe oben.'
+    }
 }
 
 Write-Host ''
