@@ -1,0 +1,76 @@
+# Picodesk - Dashboard-Ansicht fuer Home Assistant
+#
+# Einfuegen: Dashboard oeffnen -> Stift (Bearbeiten) -> oben rechts "..." ->
+# "Raw-Konfigurationseditor" -> diesen Block unter "views:" einfuegen.
+# (Oder: "+ Ansicht hinzufuegen" -> "..." -> "In YAML bearbeiten" -> ab "title:" einfuegen.)
+# Erscheint dann als eigener Reiter "Tisch" - auch in der HA-App auf dem Handy.
+
+- title: Tisch
+  path: tisch
+  icon: mdi:desk
+  cards:
+    - type: vertical-stack
+      cards:
+        - type: grid
+          columns: 2
+          square: false
+          cards:
+            - type: button
+              entity: button.picodesk_sitzen
+              name: Sitzen
+              icon: mdi:chair-rolling
+              tap_action: {action: perform-action, perform_action: button.press, target: {entity_id: button.picodesk_sitzen}}
+            - type: button
+              entity: button.picodesk_stehen
+              name: Stehen
+              icon: mdi:human-handsup
+              tap_action: {action: perform-action, perform_action: button.press, target: {entity_id: button.picodesk_stehen}}
+            - type: button
+              entity: button.picodesk_hoch_2_s
+              name: Hoch
+              icon: mdi:arrow-up-bold
+              tap_action: {action: perform-action, perform_action: button.press, target: {entity_id: button.picodesk_hoch_2_s}}
+            - type: button
+              entity: button.picodesk_runter_2_s
+              name: Runter
+              icon: mdi:arrow-down-bold
+              tap_action: {action: perform-action, perform_action: button.press, target: {entity_id: button.picodesk_runter_2_s}}
+        - type: button
+          entity: button.picodesk_stopp
+          name: STOPP
+          icon: mdi:stop
+          tap_action: {action: perform-action, perform_action: button.press, target: {entity_id: button.picodesk_stopp}}
+
+    - type: entities
+      title: Automatik & Bewegung
+      entities:
+        - switch.picodesk_automatik
+        - input_number.picodesk_sitzen_min
+        - input_number.picodesk_stehen_min
+        - sensor.picodesk_automatik_phase
+        - sensor.picodesk_automatik_restzeit
+        - type: divider
+        - switch.picodesk_bewegungserkennung
+        - input_number.picodesk_anwesenheit_timeout_min
+        - input_number.picodesk_anwesenheit_schwellwert_cm
+        - binary_sensor.picodesk_anwesend
+        - sensor.picodesk_distanz
+
+    - type: entities
+      title: Geraet
+      entities:
+        - binary_sensor.picodesk_online
+        - sensor.picodesk_version
+        - sensor.picodesk_laufzeit
+        - button.picodesk_sitzposition_setzen
+        - button.picodesk_stehposition_setzen
+        - button.picodesk_neustart
+
+    # Original-Weboberflaeche des Pico (inkl. Hoch/Runter gedrueckt halten)
+    # ueber das Add-on "Picodesk" - funktioniert auch von unterwegs/in der App.
+    - type: button
+      name: Weboberflaeche oeffnen
+      icon: mdi:desk
+      tap_action:
+        action: navigate
+        navigation_path: /hassio/ingress/local_picodesk

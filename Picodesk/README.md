@@ -17,6 +17,7 @@ Ultraschallsensor und einer passenden Android-App.
 | `dateien.html` | Dateiverwaltung: Dateien auf dem Pico suchen, bearbeiten, anlegen, loeschen |
 | `android_app/` | Native Android-App (Python/Kivy), siehe `android_app/README.md` |
 | `Windows/` | Native Windows-App (C#/WPF), siehe `Windows/README.md` |
+| `home_assistant/picodesk.yaml` | Home-Assistant-Paket (Buttons, Schalter, Sensoren) |
 
 Die drei Build-/Install-Skripte (`build_apk.ps1`, `install_apk.ps1`, `build_exe.ps1`)
 liegen im Repository-Root (eine Ebene ueber diesem Ordner), nicht hier -
@@ -142,3 +143,39 @@ Vom Repository-Root aus bauen:
 ```
 
 Ergebnis liegt danach unter `Picodesk\Windows\PicoSteuerung\publish\PicoSteuerung.exe`.
+
+## Home Assistant (HAOS)
+
+`home_assistant/picodesk.yaml` ist ein HA-Package und nutzt nur die
+vorhandene HTTP-API des Pico (Pico-IP `192.168.1.100` ist eingetragen).
+Danach gibt es in HA u.a.:
+
+- Buttons: Sitzen, Stehen, Hoch/Runter (je 2 s), Stopp, Sitz-/Stehposition setzen, Neustart
+- Schalter: Automatik (nutzt `input_number.picodesk_sitzen_min`/`_stehen_min`), Bewegungserkennung
+- Skript `script.picodesk_fahren` (Richtung + Dauer, max. 30 s) fuer Automationen
+- Sensoren: Online, Version, Automatik-Phase/-Restzeit, Anwesend, Distanz
+
+Installieren und spaeter aktualisieren - Pico und HA in einem Rutsch, vom
+Repository-Root aus:
+
+```powershell
+.\deploy.ps1            # alles; -NurPico / -NurHA fuer nur einen Teil
+```
+
+Das Skript laedt nur geaenderte Dateien auf den Pico. Beim ersten HA-Lauf fragt
+es nach einem Langzeit-Token (HA -> Profil -> Sicherheit), richtet das
+Samba-Add-on ein, kopiert das Package nach `/config/packages/`, aktiviert
+Packages in `configuration.yaml`, prueft die Konfiguration und startet HA
+neu (nur wenn sich etwas geaendert hat). Token und Samba-Zugang liegen unter
+`%APPDATA%\Picodesk\`, nicht im Repo.
+
+### Weboberflaeche in HA (auch von unterwegs)
+
+`home_assistant/addon_picodesk/` ist ein lokales HA-Add-on, das die
+Weboberflaeche des Pico per Ingress durch Home Assistant leitet. Sie erscheint
+als **Tisch** in der Seitenleiste und funktioniert damit auch per https,
+Nabu Casa und in der Companion-App von unterwegs (inkl. Hoch/Runter gedrueckt
+halten). Absolute Pfade der Seiten werden dabei per nginx umgeschrieben, die
+Dateien auf dem Pico bleiben unveraendert. `deploy.ps1` installiert und
+aktualisiert das Add-on automatisch. Eine fertige Dashboard-Ansicht liegt in
+`home_assistant/dashboard.yaml`.

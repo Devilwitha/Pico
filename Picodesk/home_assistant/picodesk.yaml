@@ -1,0 +1,298 @@
+# =============================================================================
+# Picodesk - Home Assistant Package
+#
+# Bindet den Pico-W-Tisch in Home Assistant (HAOS) ein: Buttons fuer
+# Sitzen/Stehen, Skripte fuer Hoch/Runter, Schalter fuer Automatik und
+# Bewegungserkennung sowie Sensoren fuer Status, Restzeit, Distanz usw.
+# Alles laeuft ueber die vorhandene HTTP-API des Pico (keine Aenderung an
+# main.py noetig).
+#
+# Einrichtung (Details: home_assistant/README.md):
+#   1. In configuration.yaml einmalig Packages aktivieren:
+#        homeassistant:
+#          packages: !include_dir_named packages
+#   2. Diese Datei nach /config/packages/picodesk.yaml kopieren
+#   3. Ueberall "192.168.1.100" durch die IP des Pico ersetzen (z.B. 192.168.178.42,
+#      am besten im Router fest vergeben)
+#   4. Einstellungen -> System -> Neu starten (YAML-Konfiguration pruefen)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# HTTP-Aufrufe an den Pico
+# -----------------------------------------------------------------------------
+rest_command:
+  # Impuls-Aktionen: sitzen, stehen, sitzen_setzen, stehen_setzen
+  picodesk_aktion:
+    url: "http://192.168.1.100/aktion/{{ aktion }}"
+    timeout: 15   # *_setzen haelt das Relais 5 s gedrueckt
+  # Halte-Aktionen: auf, ab
+  picodesk_start:
+    url: "http://192.168.1.100/start/{{ aktion }}"
+  picodesk_stop:
+    url: "http://192.168.1.100/stop/{{ aktion }}"
+  picodesk_automatik_start:
+    url: "http://192.168.1.100/automatik/start?sitzen={{ sitzen }}&stehen={{ stehen }}&phase={{ phase | default('sitzen') }}"
+  picodesk_automatik_stop:
+    url: "http://192.168.1.100/automatik/stop"
+  picodesk_anwesenheit_start:
+    url: "http://192.168.1.100/anwesenheit/start?abfrage={{ abfrage }}&timeout={{ timeout }}&schwellwert={{ schwellwert }}"
+  picodesk_anwesenheit_stop:
+    url: "http://192.168.1.100/anwesenheit/stop"
+  picodesk_neustart:
+    url: "http://192.168.1.100/neustart"
+
+# -----------------------------------------------------------------------------
+# Status vom Pico abfragen
+# -----------------------------------------------------------------------------
+rest:
+  - resource: "http://192.168.1.100/info"
+    scan_interval: 60
+    timeout: 10
+    binary_sensor:
+      - name: "Picodesk Online"
+        unique_id: picodesk_online
+        device_class: connectivity
+        value_template: "{{ value_json is defined and value_json.version is defined }}"
+    sensor:
+      - name: "Picodesk Version"
+        unique_id: picodesk_version
+        icon: mdi:tag
+        value_template: "{{ value_json.version }}"
+      - name: "Picodesk Laufzeit"
+        unique_id: picodesk_laufzeit
+        device_class: duration
+        unit_of_measurement: s
+        value_template: "{{ value_json.uptime_sek }}"
+
+  - resource: "http://192.168.1.100/automatik/status"
+    scan_interval: 15
+    timeout: 10
+    binary_sensor:
+      - name: "Picodesk Automatik aktiv"
+        unique_id: picodesk_automatik_aktiv
+        icon: mdi:timer-sync
+        value_template: "{{ value_json.aktiv }}"
+    sensor:
+      - name: "Picodesk Automatik Phase"
+        unique_id: picodesk_automatik_phase
+        icon: mdi:human-handsup
+        value_template: "{{ value_json.get('phase', 'aus') if value_json.aktiv else 'aus' }}"
+      - name: "Picodesk Automatik Restzeit"
+        unique_id: picodesk_automatik_restzeit
+        icon: mdi:timer-sand
+        unit_of_measurement: min
+        value_template: "{{ ((value_json.get('rest_sek', 0)) / 60) | round(1) if value_json.aktiv else 0 }}"
+
+  - resource: "http://192.168.1.100/anwesenheit/status"
+    scan_interval: 15
+    timeout: 10
+    binary_sensor:
+      - name: "Picodesk Bewegungserkennung aktiv"
+        unique_id: picodesk_anwesenheit_aktiv
+        icon: mdi:motion-sensor
+        value_template: "{{ value_json.aktiv }}"
+      - name: "Picodesk Anwesend"
+        unique_id: picodesk_anwesend
+        device_class: occupancy
+        value_template: "{{ value_json.anwesend }}"
+    sensor:
+      - name: "Picodesk Distanz"
+        unique_id: picodesk_distanz
+        device_class: distance
+        unit_of_measurement: cm
+        state_class: measurement
+        availability: "{{ value_json is defined and value_json.distanz_cm is not none }}"
+        value_template: "{{ value_json.distanz_cm }}"
+
+# -----------------------------------------------------------------------------
+# Einstellungen (werden beim Einschalten von Automatik/Bewegungserkennung
+# an den Pico uebergeben)
+# -----------------------------------------------------------------------------
+input_number:
+  picodesk_sitzen_min:
+    name: "Picodesk Sitzen (min)"
+    min: 1
+    max: 240
+    step: 1
+    initial: 60
+    unit_of_measurement: min
+    icon: mdi:chair-rolling
+  picodesk_stehen_min:
+    name: "Picodesk Stehen (min)"
+    min: 1
+    max: 240
+    step: 1
+    initial: 15
+    unit_of_measurement: min
+    icon: mdi:human-handsup
+  picodesk_anwesenheit_timeout_min:
+    name: "Picodesk Keine Bewegung (min)"
+    min: 1
+    max: 120
+    step: 1
+    initial: 10
+    unit_of_measurement: min
+    icon: mdi:timer-off
+  picodesk_anwesenheit_schwellwert_cm:
+    name: "Picodesk Schwellwert (cm)"
+    min: 1
+    max: 100
+    step: 1
+    initial: 1
+    unit_of_measurement: cm
+    icon: mdi:ruler
+
+# -----------------------------------------------------------------------------
+# Hoch/Runter: der Pico faehrt, solange "start" aktiv ist - deshalb immer mit
+# fester Dauer und anschliessendem "stop".
+# -----------------------------------------------------------------------------
+script:
+  picodesk_fahren:
+    alias: "Picodesk fahren"
+    icon: mdi:arrow-up-down
+    mode: restart
+    fields:
+      richtung:
+        name: Richtung
+        required: true
+        default: auf
+        selector:
+          select:
+            options: [auf, ab]
+      dauer:
+        name: Dauer (Sekunden)
+        required: true
+        default: 2
+        selector:
+          number:
+            min: 0.5
+            max: 30
+            step: 0.5
+            unit_of_measurement: s
+    sequence:
+      # Gegenrichtung sicherheitshalber stoppen
+      - action: rest_command.picodesk_stop
+        data:
+          aktion: "{{ 'ab' if richtung == 'auf' else 'auf' }}"
+      - action: rest_command.picodesk_start
+        data:
+          aktion: "{{ richtung }}"
+      - delay:
+          milliseconds: "{{ (dauer | float(2) * 1000) | int }}"
+      - action: rest_command.picodesk_stop
+        data:
+          aktion: "{{ richtung }}"
+
+  picodesk_stopp:
+    alias: "Picodesk Stopp"
+    icon: mdi:stop
+    mode: queued
+    sequence:
+      - action: script.turn_off
+        target:
+          entity_id: script.picodesk_fahren
+      - action: rest_command.picodesk_stop
+        data:
+          aktion: auf
+      - action: rest_command.picodesk_stop
+        data:
+          aktion: ab
+
+# -----------------------------------------------------------------------------
+# Buttons und Schalter
+# -----------------------------------------------------------------------------
+template:
+  - button:
+      - name: "Picodesk Sitzen"
+        unique_id: picodesk_btn_sitzen
+        icon: mdi:chair-rolling
+        press:
+          - action: rest_command.picodesk_aktion
+            data:
+              aktion: sitzen
+      - name: "Picodesk Stehen"
+        unique_id: picodesk_btn_stehen
+        icon: mdi:human-handsup
+        press:
+          - action: rest_command.picodesk_aktion
+            data:
+              aktion: stehen
+      - name: "Picodesk Hoch (2 s)"
+        unique_id: picodesk_btn_hoch
+        icon: mdi:arrow-up-bold
+        press:
+          - action: script.picodesk_fahren
+            data:
+              richtung: auf
+              dauer: 2
+      - name: "Picodesk Runter (2 s)"
+        unique_id: picodesk_btn_runter
+        icon: mdi:arrow-down-bold
+        press:
+          - action: script.picodesk_fahren
+            data:
+              richtung: ab
+              dauer: 2
+      - name: "Picodesk Stopp"
+        unique_id: picodesk_btn_stopp
+        icon: mdi:stop
+        press:
+          - action: script.picodesk_stopp
+      - name: "Picodesk Sitzposition setzen"
+        unique_id: picodesk_btn_sitzen_setzen
+        icon: mdi:content-save
+        press:
+          - action: rest_command.picodesk_aktion
+            data:
+              aktion: sitzen_setzen
+      - name: "Picodesk Stehposition setzen"
+        unique_id: picodesk_btn_stehen_setzen
+        icon: mdi:content-save
+        press:
+          - action: rest_command.picodesk_aktion
+            data:
+              aktion: stehen_setzen
+      - name: "Picodesk Neustart"
+        unique_id: picodesk_btn_neustart
+        device_class: restart
+        press:
+          - action: rest_command.picodesk_neustart
+
+  - switch:
+      - name: "Picodesk Automatik"
+        unique_id: picodesk_sw_automatik
+        icon: mdi:timer-sync
+        state: "{{ is_state('binary_sensor.picodesk_automatik_aktiv', 'on') }}"
+        turn_on:
+          - action: rest_command.picodesk_automatik_start
+            data:
+              sitzen: "{{ states('input_number.picodesk_sitzen_min') | int(60) }}"
+              stehen: "{{ states('input_number.picodesk_stehen_min') | int(15) }}"
+              phase: sitzen
+          - action: homeassistant.update_entity
+            target:
+              entity_id: binary_sensor.picodesk_automatik_aktiv
+        turn_off:
+          - action: rest_command.picodesk_automatik_stop
+          - action: homeassistant.update_entity
+            target:
+              entity_id: binary_sensor.picodesk_automatik_aktiv
+
+      - name: "Picodesk Bewegungserkennung"
+        unique_id: picodesk_sw_anwesenheit
+        icon: mdi:motion-sensor
+        state: "{{ is_state('binary_sensor.picodesk_bewegungserkennung_aktiv', 'on') }}"
+        turn_on:
+          - action: rest_command.picodesk_anwesenheit_start
+            data:
+              abfrage: 1
+              timeout: "{{ states('input_number.picodesk_anwesenheit_timeout_min') | int(10) }}"
+              schwellwert: "{{ states('input_number.picodesk_anwesenheit_schwellwert_cm') | int(1) }}"
+          - action: homeassistant.update_entity
+            target:
+              entity_id: binary_sensor.picodesk_bewegungserkennung_aktiv
+        turn_off:
+          - action: rest_command.picodesk_anwesenheit_stop
+          - action: homeassistant.update_entity
+            target:
+              entity_id: binary_sensor.picodesk_bewegungserkennung_aktiv

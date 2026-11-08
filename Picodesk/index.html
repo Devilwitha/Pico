@@ -993,10 +993,16 @@
     verlaufRendern();
   }
 
+  // Abfragen nur, solange der Tab sichtbar ist - der Pico beantwortet
+  // Anfragen nacheinander und wird sonst von mehreren offenen Tabs ausgebremst.
+  // Beim Zurueckwechseln wird sofort aktualisiert.
   seiteAktualisieren();
-  setInterval(seiteAktualisieren, 10000);
-  setInterval(anwesenheitDistanzAbrufen, 1000);
+  setInterval(() => { if (!document.hidden) seiteAktualisieren(); }, 10000);
+  setInterval(() => { if (!document.hidden) anwesenheitDistanzAbrufen(); }, 1000);
   setInterval(sekundenTick, 1000);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) seiteAktualisieren();
+  });
 </script>
 </body>
 </html>
