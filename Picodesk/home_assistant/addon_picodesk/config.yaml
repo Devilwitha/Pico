@@ -1,8 +1,8 @@
 name: Picodesk
-version: "1.0.4"
+version: "1.0.5"
 slug: picodesk
 description: Weboberflaeche des Pico-Tischs direkt in Home Assistant (auch von unterwegs / in der App)
-url: https://github.com/Bollshii
+url: https://github.com/Devilwitha/Pico
 arch:
   - aarch64
   - amd64

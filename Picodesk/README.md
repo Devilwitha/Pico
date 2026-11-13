@@ -12,6 +12,9 @@ Ultraschallsensor und einer passenden Android-App.
 | `main.py` | Firmware fuer den Pico W (Webserver, Automatik, Bewegungserkennung) |
 | `pico_tools/wlan.py` | Wiederverwendbares Modul: WLAN-Verbindung mit Hotspot-Fallback |
 | `pico_tools/update.py` | Wiederverwendbares Modul: Datei-Update per HTTP-Upload |
+| `pico_tools/github_update.py` | Wiederverwendbares Modul: automatisches Update aus GitHub |
+| `boot.py` | Nimmt ein GitHub-Update zurueck, wenn der Pico danach nicht sauber startet |
+| `pico_dateien.txt` | Liste der Dateien, die der Pico von GitHub aktualisiert |
 | `index.html` | Web-Oberflaeche (Steuerung, Automatik, Bewegungserkennung, Verlauf, Update) |
 | `einstellungen.html` | WLAN-Einstellungen/Recovery-Seite |
 | `dateien.html` | Dateiverwaltung: Dateien auf dem Pico suchen, bearbeiten, anlegen, loeschen |
@@ -25,10 +28,11 @@ siehe die jeweiligen Abschnitte unten.
 
 ## Pico einrichten
 
-1. `main.py`, `index.html`, `einstellungen.html`, `dateien.html` und den
-   Ordner `pico_tools/` (mit `__init__.py`, `wlan.py`, `update.py`) auf den
-   Pico W kopieren (z.B. mit Thonny - Ordner per Rechtsklick auf das
-   Pico-Dateisystem anlegen und die drei Dateien hineinlegen).
+1. `main.py`, `boot.py`, `index.html`, `einstellungen.html`, `dateien.html`
+   und den Ordner `pico_tools/` (mit `__init__.py`, `wlan.py`, `update.py`,
+   `github_update.py`) auf den Pico W kopieren (z.B. mit Thonny - Ordner per
+   Rechtsklick auf das Pico-Dateisystem anlegen und die Dateien
+   hineinlegen) - oder einfach `.\deploy.ps1 -NurPico` ausfuehren.
 2. Beim ersten Start `WLAN_SSID`/`WLAN_PASSWORT` in `main.py` setzen, oder
    spaeter bequem ueber die "Einstellungen"-Seite im Browser - das legt eine
    `wlan.conf` auf dem Pico an, die beim naechsten Start automatisch geladen
@@ -66,6 +70,35 @@ alle anderen Dateien (z.B. `.html`) werden sofort ohne Neustart uebernommen.
 Bei mehreren ausgewaehlten Dateien werden diese nacheinander hochgeladen,
 `.py`-Dateien zuletzt: die Seite wartet nach einem Neustart automatisch, bis
 der Pico wieder erreichbar ist, bevor die naechste Datei folgt.
+
+### Automatische Updates von GitHub
+
+Der Pico prueft stuendlich (erstmals 2 Minuten nach dem Start), ob es auf
+GitHub (`Devilwitha/Pico`, Zweig `main`, Ordner `Picodesk/`) einen neuen
+Commit gibt, und installiert ihn selbststaendig. Ein Push auf `main` reicht
+also - innerhalb einer Stunde ist der Tisch aktuell. Einstellbar in `main.py`
+ueber `GITHUB_REPO`/`GITHUB_ZWEIG`/`GITHUB_ORDNER`.
+
+- Aktualisiert werden nur die Dateien aus `pico_dateien.txt` - und davon nur
+  die, deren Git-Pruefsumme sich von der Datei auf dem Pico unterscheidet.
+  Neue Dateien fuer den Pico dort eintragen.
+- Alle Dateien werden erst komplett heruntergeladen und geprueft
+  (Pruefsumme, `.py` per `compile()`), dann gemeinsam ersetzt; die alte
+  Version bleibt als `<name>.bak`. Bei `.py`-Aenderungen startet der Pico neu.
+- **Rollback:** Meldet `main.py` sich nach dem Neustart nicht innerhalb von
+  3 Minuten als erfolgreich gestartet (im WLAN verbunden), oder startet der
+  Pico mehr als 3-mal, stellt `boot.py` die `.bak`-Dateien wieder her. Dieser
+  Commit wird dann nicht mehr automatisch installiert, nur noch ueber den
+  Button.
+- Nie waehrend "Auf"/"Ab" gehalten wird und nicht im Recovery-Hotspot.
+- In der Weboberflaeche (Abschnitt "Update"): Schalter "Automatisch von
+  GitHub" und Button "Jetzt von GitHub aktualisieren". In Home Assistant:
+  Button `Picodesk Update von GitHub` und Sensor `Picodesk GitHub-Stand`.
+- Endpunkte: `/github/status`, `/github/pruefen`, `/github/automatisch?an=0|1`.
+
+Hinweis: Lokal per `deploy.ps1` aufgespielte, noch nicht gepushte Aenderungen
+werden beim naechsten neuen Commit auf GitHub ueberschrieben - waehrend der
+Entwicklung ggf. den Schalter ausschalten.
 
 ### Dateiverwaltung
 
@@ -177,5 +210,7 @@ als **Tisch** in der Seitenleiste und funktioniert damit auch per https,
 Nabu Casa und in der Companion-App von unterwegs (inkl. Hoch/Runter gedrueckt
 halten). Absolute Pfade der Seiten werden dabei per nginx umgeschrieben, die
 Dateien auf dem Pico bleiben unveraendert. `deploy.ps1` installiert und
-aktualisiert das Add-on automatisch. Eine fertige Dashboard-Ansicht liegt in
+aktualisiert das Add-on automatisch. `icon.png` und `logo.png` im Add-on-Ordner
+sind das Symbol bzw. Logo, das HA in der Add-on-Uebersicht anzeigt (das
+Seitenleisten-Symbol kommt aus `panel_icon` in `config.yaml`). Eine fertige Dashboard-Ansicht liegt in
 `home_assistant/dashboard.yaml`.

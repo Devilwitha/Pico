@@ -1,0 +1,13 @@
+# Dateien, die der Pico automatisch von GitHub aktualisiert
+# (pico_tools/github_update.py). Pfade relativ zu diesem Ordner, hoechstens
+# ein Unterordner. Wird bei jedem Update aus dem jeweiligen Commit gelesen -
+# neue Dateien hier eintragen, damit sie mit auf den Pico kommen.
+index.html
+einstellungen.html
+dateien.html
+boot.py
+pico_tools/__init__.py
+pico_tools/update.py
+pico_tools/wlan.py
+pico_tools/github_update.py
+main.py

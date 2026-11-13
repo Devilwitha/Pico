@@ -417,6 +417,28 @@
   }
   .update-info.fehler { color: var(--rot); }
   .update-info.ok { color: var(--gruen); }
+  .github-zeile {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+  .github-titel {
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .github-info {
+    font-size: 11.5px;
+    color: var(--text-dim);
+    margin-top: 2px;
+    line-height: 1.4;
+  }
+  .github-info.fehler { color: var(--rot); }
+  .github-btn {
+    width: 100%;
+    margin-bottom: 16px;
+  }
 </style>
 </head>
 <body>
@@ -515,6 +537,17 @@
       <span class="titel">Update</span>
       <span class="zaehler" id="versionAnzeige">v?</span>
     </div>
+    <div class="github-zeile">
+      <div>
+        <div class="github-titel">Automatisch von GitHub</div>
+        <div class="github-info" id="githubInfo">Lade Status...</div>
+      </div>
+      <label class="schalter" title="Stuendlich auf neue Version pruefen und installieren">
+        <input type="checkbox" id="githubToggle">
+        <span class="schalter-slider"></span>
+      </label>
+    </div>
+    <button type="button" class="update-btn github-btn" id="githubButton">Jetzt von GitHub aktualisieren</button>
     <div class="update-bereich">
       <label class="update-datei" for="updateDatei">
         <span id="updateDateiName">Datei(en) auswaehlen (.py oder .html)</span>
@@ -951,6 +984,67 @@
     }
   });
 
+  // --- Automatische Updates von GitHub ---
+  const githubToggle = document.getElementById('githubToggle');
+  const githubInfo = document.getElementById('githubInfo');
+  const githubButton = document.getElementById('githubButton');
+
+  function githubAnzeigen(d) {
+    githubToggle.checked = !!d.automatisch;
+    const teile = [];
+    if (d.stand) teile.push('Stand ' + d.stand);
+    if (d.meldung) teile.push(d.meldung);
+    if (d.vor_sek !== null && d.vor_sek !== undefined) teile.push('geprueft ' + formatVor(d.vor_sek));
+    githubInfo.textContent = teile.join(' · ');
+    githubInfo.className = d.fehler ? 'github-info fehler' : 'github-info';
+  }
+
+  async function githubStatusAbrufen() {
+    try {
+      const res = await fetch('/github/status');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const d = await res.json();
+      githubAnzeigen(d);
+      return d;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  githubToggle.addEventListener('change', async () => {
+    try {
+      const res = await fetch('/github/automatisch?an=' + (githubToggle.checked ? 1 : 0));
+      githubAnzeigen(await res.json());
+    } catch (err) {
+      githubToggle.checked = !githubToggle.checked;
+    }
+  });
+
+  githubButton.addEventListener('click', async () => {
+    githubButton.disabled = true;
+    githubInfo.className = 'github-info';
+    githubInfo.textContent = 'Pruefe GitHub...';
+    try {
+      await fetch('/github/pruefen');
+    } catch (err) {
+      // wird unten ueber den Status erneut versucht
+    }
+    // Der Pico prueft nach der Antwort - die naechste Anfrage wartet, bis er
+    // fertig ist. Bricht sie ab, startet er gerade mit dem Update neu.
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      const d = await githubStatusAbrufen();
+      if (d === null) {
+        githubInfo.textContent = 'Update wird installiert - Pico startet neu...';
+        await warteBisOnline(90);
+        location.reload();
+        return;
+      }
+      if (!d.laeuft) break;
+    }
+    githubButton.disabled = false;
+  });
+
   neustartButton.addEventListener('click', async () => {
     if (!confirm('Pico jetzt neu starten?')) return;
     neustartButton.disabled = true;
@@ -997,7 +1091,9 @@
   // Anfragen nacheinander und wird sonst von mehreren offenen Tabs ausgebremst.
   // Beim Zurueckwechseln wird sofort aktualisiert.
   seiteAktualisieren();
+  githubStatusAbrufen();
   setInterval(() => { if (!document.hidden) seiteAktualisieren(); }, 10000);
+  setInterval(() => { if (!document.hidden) githubStatusAbrufen(); }, 60000);
   setInterval(() => { if (!document.hidden) anwesenheitDistanzAbrufen(); }, 1000);
   setInterval(sekundenTick, 1000);
   document.addEventListener('visibilitychange', () => {

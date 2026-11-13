@@ -15,6 +15,11 @@ Die WLAN-Verbindung (inkl. Hotspot-Fallback) und die Update-Funktion stecken
 nicht hier, sondern in den wiederverwendbaren Modulen pico_tools/wlan.py und
 pico_tools/update.py (koennen 1:1 in andere Pico-Projekte kopiert werden).
 
+Automatische Updates: pico_tools/github_update.py prueft stuendlich das
+GitHub-Repository (GITHUB_REPO/GITHUB_ZWEIG/GITHUB_ORDNER) und installiert
+geaenderte Dateien aus pico_dateien.txt. boot.py nimmt ein Update zurueck,
+falls main.py danach nicht erfolgreich startet.
+
 WLAN-Einstellungen werden in "wlan.conf" gespeichert und beim Start geladen.
 Schlaegt die Verbindung nach mehreren Versuchen fehl, oeffnet der Pico einen
 eigenen Hotspot mit einer Recovery-Seite (einstellungen.html), auf der neue
@@ -46,13 +51,19 @@ import machine
 import _thread
 from machine import Pin, time_pulse_us
 
-from pico_tools import wlan, update
+from pico_tools import wlan, update, github_update
 
 # ---------------------------------------------------------------------------
 # Konfiguration
 # ---------------------------------------------------------------------------
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
+
+# Automatische Updates von GitHub (siehe pico_tools/github_update.py). Der
+# Ordner GITHUB_ORDNER im Repository entspricht dem Dateisystem des Pico.
+GITHUB_REPO = "Devilwitha/Pico"
+GITHUB_ZWEIG = "main"
+GITHUB_ORDNER = "Picodesk"
 
 WLAN_SSID = "FRITZ!Box 5530 BA_2GEXT"
 WLAN_PASSWORT = "1234567890"
@@ -617,7 +628,9 @@ def anfrage_bearbeiten(client):
         methode = teile[0] if teile else "GET"
         pfad = teile[1] if len(teile) > 1 else "/"
 
-        if methode == "POST" and pfad.startswith("/update"):
+        if pfad.startswith("/github/"):
+            github_update.anfrage_bearbeiten(client, pfad, http_antwort)
+        elif methode == "POST" and pfad.startswith("/update"):
             update.anfrage_bearbeiten(
                 client, pfad, lambda name: header_wert(kopf_text, name),
                 body_bereits_gelesen, http_antwort, max_bytes=UPDATE_MAX_BYTES,
@@ -808,11 +821,28 @@ def webserver_starten(port=80):
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind(adresse)
     server.listen(4)
+    # accept() wartet hoechstens 1 s, damit zwischendurch die (seltene)
+    # GitHub-Update-Pruefung laufen kann
+    server.settimeout(1)
     print("Webserver laeuft auf Port", port)
 
     while True:
-        client, addr = server.accept()
-        anfrage_bearbeiten(client)
+        try:
+            client, addr = server.accept()
+        except OSError:
+            client = None
+        if client is not None:
+            anfrage_bearbeiten(client)
+        github_update.tick()
+
+
+def update_erlaubt():
+    """GitHub-Updates nur mit Internet (nicht im Hotspot) und nie, waehrend
+    "auf"/"ab" gehalten wird - die Pruefung blockiert den Webserver einige
+    Sekunden, ein "Stop" kaeme sonst zu spaet."""
+    if wlan.modus != "normal":
+        return False
+    return not any(AKTIONEN[name].value() for name in HALTE_AKTIONEN)
 
 
 def main():
@@ -831,7 +861,15 @@ def main():
         timeout=WLAN_VERSUCH_TIMEOUT,
     )
 
+    github_update.einrichten(
+        GITHUB_REPO, zweig=GITHUB_ZWEIG, ordner=GITHUB_ORDNER,
+        darf_aktualisieren=update_erlaubt,
+    )
+
     if modus == "normal":
+        # Erfolgreich gestartet und im WLAN: ein gerade installiertes
+        # GitHub-Update gilt als gelungen (sonst nimmt boot.py es zurueck)
+        github_update.bestaetigen()
         _thread.start_new_thread(hintergrund_thread, ())
     else:
         _thread.start_new_thread(wlan.hotspot_timeout_thread, (discovery_tick,))

@@ -59,6 +59,7 @@ function Update-Pico {
     $dateien = @(
         "index.html", "einstellungen.html", "dateien.html",
         "pico_tools/__init__.py", "pico_tools/update.py", "pico_tools/wlan.py",
+        "pico_tools/github_update.py", "boot.py",
         "main.py"
     )
     $geaendert = 0
@@ -189,8 +190,18 @@ function Update-Addon([string]$share) {
 
     $dateienGeaendert = $false
     foreach ($datei in Get-ChildItem $quelle -File) {
-        $neu = (Get-Content $datei.FullName -Raw) -replace "`r`n", "`n"
         $zielDatei = Join-Path $ziel $datei.Name
+        if ($datei.Extension -in ".png", ".jpg") {
+            # Bilder (icon.png/logo.png) binaer vergleichen und kopieren
+            $neuHash = (Get-FileHash $datei.FullName).Hash
+            $altHash = if (Test-Path $zielDatei) { (Get-FileHash $zielDatei).Hash } else { "" }
+            if ($neuHash -ne $altHash) {
+                Copy-Item $datei.FullName $zielDatei -Force
+                $dateienGeaendert = $true
+            }
+            continue
+        }
+        $neu = (Get-Content $datei.FullName -Raw) -replace "`r`n", "`n"
         $alt = if (Test-Path $zielDatei) { (Get-Content $zielDatei -Raw) -replace "`r`n", "`n" } else { "" }
         if ($neu -ne $alt) {
             [IO.File]::WriteAllText($zielDatei, $neu)

@@ -40,6 +40,9 @@ rest_command:
     url: "http://192.168.1.100/anwesenheit/stop"
   picodesk_neustart:
     url: "http://192.168.1.100/neustart"
+  # Sofort auf GitHub nach einer neuen Version suchen und installieren
+  picodesk_github_pruefen:
+    url: "http://192.168.1.100/github/pruefen"
 
 # -----------------------------------------------------------------------------
 # Status vom Pico abfragen
@@ -63,6 +66,20 @@ rest:
         device_class: duration
         unit_of_measurement: s
         value_template: "{{ value_json.uptime_sek }}"
+
+  - resource: "http://192.168.1.100/github/status"
+    scan_interval: 300
+    timeout: 10
+    sensor:
+      - name: "Picodesk GitHub-Stand"
+        unique_id: picodesk_github_stand
+        icon: mdi:github
+        value_template: "{{ value_json.stand or 'unbekannt' }}"
+        json_attributes:
+          - meldung
+          - verfuegbar
+          - automatisch
+          - fehler
 
   - resource: "http://192.168.1.100/automatik/status"
     scan_interval: 15
@@ -257,6 +274,12 @@ template:
         device_class: restart
         press:
           - action: rest_command.picodesk_neustart
+
+      - name: "Picodesk Update von GitHub"
+        unique_id: picodesk_btn_github_update
+        icon: mdi:github
+        press:
+          - action: rest_command.picodesk_github_pruefen
 
   - switch:
       - name: "Picodesk Automatik"
